@@ -1,5 +1,5 @@
 use chrono::Duration;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use super::{
     media::{Image, Media, TextOrMedia},

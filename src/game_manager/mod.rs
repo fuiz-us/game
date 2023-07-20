@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use dashmap::{DashMap, mapref::entry::Entry};
+use dashmap::{mapref::entry::Entry, DashMap};
 
 use self::{
     fuiz::Fuiz,
@@ -14,18 +14,22 @@ pub mod theme;
 
 #[derive(Debug, Default)]
 pub struct GameManager {
-    games: Arc<DashMap<GameId, Game>>,
+    games: DashMap<GameId, Arc<Game>>,
 }
 
 impl GameManager {
     pub fn add_game(&self, fuiz: Fuiz) -> GameId {
         loop {
             let game_id = GameId::new();
-            
+
             match self.games.entry(game_id.clone()) {
                 Entry::Occupied(_) => continue,
                 Entry::Vacant(v) => {
-                    v.insert(Game { game_id: game_id.clone(), fuiz });
+                    let game = Arc::new(Game {
+                        game_id: game_id.clone(),
+                        fuiz,
+                    });
+                    v.insert(game);
                     return game_id;
                 }
             }

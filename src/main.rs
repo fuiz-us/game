@@ -1,6 +1,6 @@
 mod game_manager;
 
-use actix_web::{get, web, App, HttpServer, Responder, post};
+use actix_web::{get, post, web, App, HttpServer, Responder};
 use game_manager::GameManager;
 
 use crate::game_manager::fuiz::Fuiz;
