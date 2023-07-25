@@ -1,15 +1,17 @@
 mod game_manager;
 
-use std::str::FromStr;
-
+use crate::game_manager::{fuiz::Fuiz, game::GameId};
 use actix_web::{
     cookie::CookieBuilder, get, post, web, App, HttpRequest, HttpResponse, HttpServer, Responder,
 };
 use futures_util::StreamExt;
 use game_manager::GameManager;
+use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::game_manager::{fuiz::Fuiz, game::GameId};
+extern crate pretty_env_logger;
+#[macro_use]
+extern crate log;
 
 struct AppState {
     game_manager: GameManager,
@@ -97,6 +99,8 @@ async fn watch(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    pretty_env_logger::init();
+
     let app_state = web::Data::new(AppState {
         game_manager: GameManager::default(),
     });

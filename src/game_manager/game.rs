@@ -74,16 +74,16 @@ impl Game {
     }
 
     pub async fn receive_message(&self, id: Uuid, message: IncomingMessage) {
-        println!("GOT {} FROM {:?}", id, message);
+        info!("GOT {:?} FROM {}", message, id);
     }
 
     pub fn add_listener(&self, id: Uuid, session: Session) {
-        println!("HI {}", id);
+        info!("HI {}", id);
         self.listeners.insert(id, session);
     }
 
     pub fn remove_listener(&self, id: Uuid) {
-        println!("BYE BYE {}", &id);
+        info!("BYE BYE {}", &id);
         self.listeners.remove(&id);
     }
 }
