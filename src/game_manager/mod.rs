@@ -10,6 +10,7 @@ use self::{
 pub mod fuiz;
 pub mod game;
 pub mod media;
+pub mod session;
 pub mod theme;
 
 #[derive(Debug, Default)]
@@ -27,6 +28,7 @@ impl GameManager {
                 Entry::Vacant(v) => {
                     let game = Arc::new(Game {
                         game_id: game_id.clone(),
+                        listeners: DashMap::new(),
                         fuiz,
                     });
                     v.insert(game);
@@ -34,5 +36,9 @@ impl GameManager {
                 }
             }
         }
+    }
+
+    pub fn get_game(&self, game_id: &GameId) -> Option<Arc<Game>> {
+        self.games.get(game_id).map(|g| g.value().to_owned())
     }
 }
