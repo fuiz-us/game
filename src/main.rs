@@ -1,6 +1,10 @@
 mod game_manager;
 
-use actix_web::{get, post, web, App, HttpRequest, HttpResponse, HttpServer, Responder};
+use std::str::FromStr;
+
+use actix_web::{
+    cookie::CookieBuilder, get, post, web, App, HttpRequest, HttpResponse, HttpServer, Responder,
+};
 use futures_util::StreamExt;
 use game_manager::GameManager;
 use uuid::Uuid;
@@ -47,15 +51,19 @@ async fn watch(
     body: web::Payload,
     game_id: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let (response, mut session, mut msg_stream) = actix_ws::handle(&req, body)?;
+    let (mut response, mut session, mut msg_stream) = actix_ws::handle(&req, body)?;
 
     let game_id = GameId {
         id: game_id.into_inner(),
     };
 
     if let Some(ongoing_game) = data.game_manager.get_game(&game_id) {
+        let id = match req.cookie("id") {
+            Some(x) => Uuid::from_str(x.value()).unwrap_or(Uuid::new_v4()),
+            None => Uuid::new_v4(),
+        };
+
         actix_web::rt::spawn(async move {
-            let id = Uuid::default();
             let own_session = game_manager::session::Session::new(session.clone());
             ongoing_game.add_listener(id, own_session);
 
@@ -78,6 +86,9 @@ async fn watch(
             ongoing_game.remove_listener(id);
             session.close(None).await.ok();
         });
+
+        response.add_cookie(&CookieBuilder::new("id", id.to_string()).finish())?;
+
         Ok(response)
     } else {
         Err(actix_web::error::ErrorNotFound("GameId not found"))
