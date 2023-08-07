@@ -1,9 +1,19 @@
 use std::sync::Mutex;
 
 use actix_ws::Closed;
+use async_trait::async_trait;
+
+#[cfg(test)]
+use mockall::automock;
 
 pub struct Session {
     session: Mutex<actix_ws::Session>,
+}
+
+#[cfg_attr(test, automock)]
+#[async_trait]
+pub trait Tunnel {
+    async fn send(&self, message: &str) -> Result<(), Closed>;
 }
 
 impl Session {
@@ -14,8 +24,9 @@ impl Session {
     }
 }
 
-impl Session {
-    pub async fn send(&self, message: &str) -> Result<(), Closed> {
+#[async_trait]
+impl Tunnel for Session {
+    async fn send(&self, message: &str) -> Result<(), Closed> {
         // This avoids holding the mutex lock while it awaits sending the message
         let session = match self.session.lock() {
             Ok(s) => Ok(s.clone()),
