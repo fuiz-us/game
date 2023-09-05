@@ -60,8 +60,8 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
     });
 
     let cookie = CookieBuilder::new("wid", host_id.to_string())
-        .same_site(actix_web::cookie::SameSite::Lax)
-        .secure(false)
+        .same_site(actix_web::cookie::SameSite::Strict)
+        .secure(true)
         .path("/")
         .http_only(true)
         .finish();
@@ -134,8 +134,8 @@ async fn watch(
 
             response.add_cookie(
                 &CookieBuilder::new("wid", watcher_id.to_string())
-                    .same_site(actix_web::cookie::SameSite::Lax)
-                    .secure(false)
+                    .same_site(actix_web::cookie::SameSite::Strict)
+                    .secure(true)
                     .http_only(true)
                     .path("/")
                     .finish(),
@@ -199,7 +199,7 @@ async fn main() -> std::io::Result<()> {
             .service(watch)
             .service(start)
     })
-    .bind(("0.0.0.0", 8080))?
+    .bind(("127.0.0.1", 8080))?
     .run()
     .await
 }
