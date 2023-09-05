@@ -60,7 +60,7 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
     });
 
     let cookie = CookieBuilder::new("wid", host_id.to_string())
-        .same_site(actix_web::cookie::SameSite::Strict)
+        .same_site(actix_web::cookie::SameSite::None)
         .secure(true)
         .path("/")
         .http_only(true)
@@ -134,7 +134,7 @@ async fn watch(
 
             response.add_cookie(
                 &CookieBuilder::new("wid", watcher_id.to_string())
-                    .same_site(actix_web::cookie::SameSite::Strict)
+                    .same_site(actix_web::cookie::SameSite::None)
                     .secure(true)
                     .http_only(true)
                     .path("/")
