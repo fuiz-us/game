@@ -1,62 +1,140 @@
-use dashmap::DashMap;
+use std::str::FromStr;
+
+use dashmap::{DashMap, DashSet};
 use derive_where::derive_where;
+use enum_map::{Enum, EnumMap};
+use itertools::Itertools;
+use kinded::Kinded;
 use uuid::Uuid;
 
 use super::session::Tunnel;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Watcher {
-    pub id: Uuid,
-    pub kind: WatcherType,
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WatcherId(Uuid);
+
+impl Default for WatcherId {
+    fn default() -> Self {
+        Self(Uuid::new_v4())
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum WatcherType {
+impl ToString for WatcherId {
+    fn to_string(&self) -> String {
+        self.0.to_string()
+    }
+}
+
+impl FromStr for WatcherId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::from_str(s)?))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Kinded)]
+#[kinded(derive(Hash, Enum))]
+pub enum WatcherValue {
+    Unassigned,
     Host,
     Player(String),
 }
 
 #[derive_where(Default)]
 pub struct Watchers<T: Tunnel> {
-    host_watchers: DashMap<Watcher, T>,
-    player_watchers: DashMap<Watcher, T>,
+    sessions: DashMap<WatcherId, T>,
+    watchers: DashMap<WatcherId, WatcherValue>,
+    reverse_watchers: EnumMap<WatcherValueKind, DashSet<WatcherId>>,
 }
 
 impl<T: Tunnel> Watchers<T> {
     pub fn iter(
         &self,
-    ) -> std::iter::Chain<dashmap::iter::Iter<'_, Watcher, T>, dashmap::iter::Iter<'_, Watcher, T>>
-    {
-        self.host_watchers.iter().chain(self.player_watchers.iter())
+    ) -> Vec<(
+        WatcherId,
+        dashmap::mapref::one::Ref<'_, WatcherId, T>,
+        WatcherValue,
+    )> {
+        self.reverse_watchers
+            .values()
+            .flat_map(|x| x.iter())
+            .flat_map(|x| match (self.sessions.get(&x), self.watchers.get(&x)) {
+                (Some(t), Some(v)) => Some((x.to_owned(), t, v.value().to_owned())),
+                _ => None,
+            })
+            .collect_vec()
     }
 
-    pub fn players_iter(&self) -> dashmap::iter::Iter<'_, Watcher, T> {
-        self.player_watchers.iter()
+    pub fn specific_iter(
+        &self,
+        filter: WatcherValueKind,
+    ) -> Vec<(
+        WatcherId,
+        dashmap::mapref::one::Ref<'_, WatcherId, T>,
+        WatcherValue,
+    )> {
+        self.reverse_watchers[filter]
+            .iter()
+            .flat_map(|x| match (self.sessions.get(&x), self.watchers.get(&x)) {
+                (Some(t), Some(v)) => Some((x.to_owned(), t, v.value().to_owned())),
+                _ => None,
+            })
+            .collect_vec()
     }
 
-    pub fn _hosts_iter(&self) -> dashmap::iter::Iter<'_, Watcher, T> {
-        self.host_watchers.iter()
+    pub fn _specific_count(&self, filter: WatcherValueKind) -> usize {
+        self.reverse_watchers[filter].len()
     }
 
-    pub fn _players_count(&self) -> usize {
-        self.player_watchers.len()
+    pub fn add_watcher(&self, watcher_id: WatcherId, watcher_value: WatcherValue, session: T) {
+        let kind = watcher_value.kind();
+        self.sessions.insert(watcher_id, session);
+        self.watchers.insert(watcher_id, watcher_value);
+        self.reverse_watchers[kind].insert(watcher_id);
     }
 
-    pub fn hosts_count(&self) -> usize {
-        self.host_watchers.len()
-    }
-
-    pub fn add_watcher(&self, watcher: Watcher, session: T) {
-        match watcher.kind {
-            WatcherType::Host => self.host_watchers.insert(watcher, session),
-            WatcherType::Player(_) => self.player_watchers.insert(watcher, session),
+    pub fn update_watcher_value(&self, watcher_id: WatcherId, watcher_value: WatcherValue) {
+        let old_kind = match self.watchers.get(&watcher_id) {
+            Some(v) => v.kind(),
+            _ => return,
         };
+        let new_kind = watcher_value.kind();
+        if old_kind != new_kind {
+            self.reverse_watchers[old_kind].remove(&watcher_id);
+            self.reverse_watchers[new_kind].insert(watcher_id);
+        }
+        self.watchers.insert(watcher_id, watcher_value);
     }
 
-    pub fn remove_watcher(&self, watcher: &Watcher) {
-        match watcher.kind {
-            WatcherType::Host => self.host_watchers.remove(watcher),
-            WatcherType::Player(_) => self.player_watchers.remove(watcher),
+    pub fn update_watcher_session(&self, watcher_id: WatcherId, session: T) {
+        self.sessions.insert(watcher_id, session);
+    }
+
+    pub fn get_watcher_value(&self, watcher_id: WatcherId) -> Option<WatcherValue> {
+        self.watchers.get(&watcher_id).map(|x| x.value().to_owned())
+    }
+
+    pub fn has_watcher(&self, watcher_id: WatcherId) -> bool {
+        self.watchers.get(&watcher_id).is_some()
+    }
+
+    pub fn reserve_watcher(&self, watcher_id: WatcherId, watcher_value: WatcherValue) {
+        let kind = watcher_value.kind();
+        self.watchers.insert(watcher_id, watcher_value);
+        self.reverse_watchers[kind].insert(watcher_id);
+    }
+
+    pub fn remove_watcher_session(&self, watcher_id: &WatcherId) {
+        self.sessions.remove(watcher_id);
+    }
+
+    pub async fn send(&self, message: &str, watcher_id: WatcherId) {
+        let Some(session) = self.sessions.get(&watcher_id) else {
+            return;
         };
+
+        if session.send(message).await.is_err() {
+            self.sessions.remove(&watcher_id);
+        }
     }
 }

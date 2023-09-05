@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use crate::game_manager::{game::StateMessage, session::Tunnel};
+use crate::game_manager::{game::StateMessage, session::Tunnel, watcher::WatcherId};
 
 use super::{
     super::game::{Game, GameState, IncomingMessage},
@@ -58,13 +57,13 @@ impl FuizConfig {
     pub async fn receive_message<T: Tunnel>(
         &self,
         game: &Game<T>,
-        uuid: Uuid,
+        watcher_id: WatcherId,
         message: IncomingMessage,
         index: usize,
     ) {
         if let Some(slide) = self.slides.get(index) {
             slide
-                .receive_message(game, self, uuid, message, index)
+                .receive_message(game, self, watcher_id, message, index, self.slides.len())
                 .await;
         }
     }
@@ -75,7 +74,7 @@ impl FuizConfig {
         index: usize,
     ) -> Option<Box<dyn StateMessage>> {
         if let Some(slide) = self.slides.get(index) {
-            Some(slide.state_message(game))
+            Some(slide.state_message(game, index, self.slides.len()))
         } else {
             None
         }
@@ -88,11 +87,11 @@ impl Slide {
         game: &Game<T>,
         fuiz: &FuizConfig,
         index: usize,
-        slides_count: usize,
+        count: usize,
     ) {
         match self {
             Self::MultipleChoice(s) => {
-                s.play(game, fuiz, index, slides_count).await;
+                s.play(game, fuiz, index, count).await;
             }
         }
     }
@@ -101,20 +100,27 @@ impl Slide {
         &self,
         game: &Game<T>,
         fuiz: &FuizConfig,
-        uuid: Uuid,
+        watcher_id: WatcherId,
         message: IncomingMessage,
         index: usize,
+        count: usize,
     ) {
         match self {
             Self::MultipleChoice(s) => {
-                s.receive_message(game, fuiz, uuid, message, index).await;
+                s.receive_message(game, fuiz, watcher_id, message, index, count)
+                    .await;
             }
         }
     }
 
-    pub fn state_message<T: Tunnel>(&self, game: &Game<T>) -> Box<dyn StateMessage> {
+    pub fn state_message<T: Tunnel>(
+        &self,
+        game: &Game<T>,
+        index: usize,
+        count: usize,
+    ) -> Box<dyn StateMessage> {
         match self {
-            Self::MultipleChoice(s) => Box::new(s.state_message(game)),
+            Self::MultipleChoice(s) => Box::new(s.state_message(game, index, count)),
         }
     }
 }

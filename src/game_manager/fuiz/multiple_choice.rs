@@ -9,9 +9,12 @@ use atomig::{Atom, Atomic, Ordering};
 use dashmap::DashMap;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use crate::game_manager::{game, session::Tunnel};
+use crate::game_manager::{
+    game,
+    session::Tunnel,
+    watcher::{WatcherId, WatcherValueKind},
+};
 
 use super::{
     super::game::{Game, IncomingHostMessage, IncomingMessage, IncomingPlayerMessage},
@@ -31,7 +34,7 @@ enum SlideState {
 }
 
 #[serde_with::serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Slide {
     title: String,
     media: Option<Media>,
@@ -43,17 +46,40 @@ pub struct Slide {
     answers: Vec<Answer>,
 
     #[serde(skip)]
-    user_answers: DashMap<Uuid, (usize, Instant)>,
+    user_answers: DashMap<WatcherId, (usize, Instant)>,
     #[serde(skip)]
     answer_start: Arc<Mutex<Option<Instant>>>,
     #[serde(skip)]
     slide_state: Arc<Atomic<SlideState>>,
 }
 
+impl Slide {
+    pub fn _new(
+        title: String,
+        media: Option<Media>,
+        introduce_question: Duration,
+        time_limit: Duration,
+        points_awarded: u64,
+        answers: Vec<Answer>,
+    ) -> Self {
+        Self {
+            title,
+            media,
+            introduce_question,
+            time_limit,
+            points_awarded,
+            answers,
+            ..Default::default()
+        }
+    }
+}
+
 #[serde_with::serde_as]
 #[derive(Debug, Serialize, Clone)]
 pub enum OutcomingMessage {
     QuestionAnnouncment {
+        index: usize,
+        count: usize,
         question: String,
         media: Option<Media>,
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
@@ -66,43 +92,65 @@ pub enum OutcomingMessage {
     },
     AnswersCount(usize),
     AnswersResults {
-        answers: Vec<AnswerResult>,
+        results: Vec<AnswerResult>,
     },
-    Leaderboard(Vec<(String, u64)>),
+    Leaderboard {
+        points: Vec<(String, u64)>,
+    },
 }
 
-impl game::OutcomingMessage for OutcomingMessage {}
+impl game::OutcomingMessage for OutcomingMessage {
+    fn identifier(&self) -> &'static str {
+        "MultipleChoice"
+    }
+}
 
 #[serde_with::serde_as]
 #[derive(Debug, Serialize, Clone)]
 pub enum StateMessage {
     QuestionAnnouncment {
+        index: usize,
+        count: usize,
         question: String,
         media: Option<Media>,
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
     },
     AnswersAnnouncement {
+        index: usize,
+        count: usize,
         question: String,
         media: Option<Media>,
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
         answers: Vec<TextOrMedia>,
+        answered_count: usize,
     },
     AnswersResults {
+        index: usize,
+        count: usize,
         question: String,
         media: Option<Media>,
-        answers: Vec<(TextOrMedia, AnswerResult)>,
+        answers: Vec<TextOrMedia>,
+        results: Vec<AnswerResult>,
     },
-    Leaderboard(Vec<(String, u64)>),
+    Leaderboard {
+        index: usize,
+        count: usize,
+        points: Vec<(String, u64)>,
+    },
 }
 
-impl game::StateMessage for StateMessage {}
+impl game::StateMessage for StateMessage {
+    fn identifier(&self) -> &'static str {
+        "MultipleChoice"
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Answer {
     pub correct: bool,
-    content: TextOrMedia,
+    pub content: TextOrMedia,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -116,10 +164,10 @@ impl Slide {
         &self,
         game: &Game<T>,
         _fuiz: &FuizConfig,
-        _index: usize,
-        _slides_count: usize,
+        index: usize,
+        count: usize,
     ) {
-        self.send_question_announcements(game).await;
+        self.send_question_announcements(game, index, count).await;
     }
 
     fn calculate_score(
@@ -127,8 +175,9 @@ impl Slide {
         taken_duration: Duration,
         full_points_awarded: u64,
     ) -> u64 {
-        (taken_duration.as_millis() / 2 * (full_points_awarded as u128) / full_duration.as_millis())
-            as u64
+        full_points_awarded
+            - ((taken_duration.as_millis() / 2 * (full_points_awarded as u128)
+                / full_duration.as_millis()) as u64)
     }
 
     fn start_timer(&self) {
@@ -145,11 +194,18 @@ impl Slide {
             .unwrap_or(Instant::now())
     }
 
-    async fn send_question_announcements<T: Tunnel>(&self, game: &Game<T>) {
+    async fn send_question_announcements<T: Tunnel>(
+        &self,
+        game: &Game<T>,
+        index: usize,
+        count: usize,
+    ) {
         if self.change_state(SlideState::Unstarted, SlideState::Question) {
             self.start_timer();
 
             game.announce(OutcomingMessage::QuestionAnnouncment {
+                index,
+                count,
                 question: self.title.clone(),
                 media: self.media.clone(),
                 duration: self.introduce_question,
@@ -196,7 +252,7 @@ impl Slide {
         if self.change_state(SlideState::Answers, SlideState::AnswersResults) {
             let answer_count = self.user_answers.iter().map(|ua| ua.value().0).counts();
             game.announce(OutcomingMessage::AnswersResults {
-                answers: self
+                results: self
                     .answers
                     .iter()
                     .enumerate()
@@ -214,8 +270,10 @@ impl Slide {
         if self.change_state(SlideState::AnswersResults, SlideState::Leaderboard) {
             self.add_scores(game);
 
-            game.announce(OutcomingMessage::Leaderboard(game.leaderboard()))
-                .await;
+            game.announce(OutcomingMessage::Leaderboard {
+                points: game.leaderboard(),
+            })
+            .await;
         }
     }
 
@@ -226,27 +284,37 @@ impl Slide {
             let id = ua.key();
             let (answer, instant) = *ua.value();
             let correct = self.answers.get(answer).map(|x| x.correct).unwrap_or(false);
-            if correct {
-                game.leaderboard.add_score(
-                    id.to_owned(),
+            game.leaderboard.add_score(id.to_owned(), {
+                if correct {
                     Slide::calculate_score(
                         self.time_limit,
                         instant - starting_instant,
                         self.points_awarded,
-                    ),
-                );
-            }
+                    )
+                } else {
+                    0
+                }
+            });
         }
     }
 
-    pub fn state_message<T: Tunnel>(&self, game: &Game<T>) -> StateMessage {
+    pub fn state_message<T: Tunnel>(
+        &self,
+        game: &Game<T>,
+        index: usize,
+        count: usize,
+    ) -> StateMessage {
         match self.state() {
             SlideState::Unstarted | SlideState::Question => StateMessage::QuestionAnnouncment {
+                index,
+                count,
                 question: self.title.to_owned(),
                 media: self.media.to_owned(),
                 duration: self.introduce_question - self.timer().elapsed(),
             },
             SlideState::Answers => StateMessage::AnswersAnnouncement {
+                index,
+                count,
                 question: self.title.to_owned(),
                 media: self.media.to_owned(),
                 duration: self.time_limit - self.timer().elapsed(),
@@ -256,30 +324,46 @@ impl Slide {
                     .enumerate()
                     .map(|(_, a)| a.content.clone())
                     .collect_vec(),
+                answered_count: {
+                    let left_set: HashSet<_> = game
+                        .watchers
+                        .specific_iter(WatcherValueKind::Player)
+                        .iter()
+                        .map(|(w, _, _)| w.to_owned())
+                        .collect();
+                    let right_set: HashSet<_> = self
+                        .user_answers
+                        .iter()
+                        .map(|ua| ua.key().to_owned())
+                        .collect();
+                    left_set.intersection(&right_set).count()
+                },
             },
             SlideState::AnswersResults => {
                 let answer_count = self.user_answers.iter().map(|ua| ua.value().0).counts();
 
                 StateMessage::AnswersResults {
+                    index,
+                    count,
                     question: self.title.to_owned(),
                     media: self.media.to_owned(),
-                    answers: self
+                    answers: self.answers.iter().map(|a| a.content.clone()).collect_vec(),
+                    results: self
                         .answers
                         .iter()
                         .enumerate()
-                        .map(|(i, a)| {
-                            (
-                                a.content.clone(),
-                                AnswerResult {
-                                    correct: a.correct,
-                                    count: *answer_count.get(&i).unwrap_or(&0),
-                                },
-                            )
+                        .map(|(i, a)| AnswerResult {
+                            correct: a.correct,
+                            count: *answer_count.get(&i).unwrap_or(&0),
                         })
                         .collect_vec(),
                 }
             }
-            SlideState::Leaderboard => StateMessage::Leaderboard(game.leaderboard()),
+            SlideState::Leaderboard => StateMessage::Leaderboard {
+                index,
+                count,
+                points: game.leaderboard(),
+            },
         }
     }
 
@@ -287,14 +371,17 @@ impl Slide {
         &self,
         game: &Game<T>,
         fuiz: &FuizConfig,
-        uuid: Uuid,
+        watcher_id: WatcherId,
         message: IncomingMessage,
         index: usize,
+        count: usize,
     ) {
         match message {
             IncomingMessage::Host(IncomingHostMessage::Next) => {
                 match self.slide_state.load(Ordering::SeqCst) {
-                    SlideState::Unstarted => self.send_question_announcements(game).await,
+                    SlideState::Unstarted => {
+                        self.send_question_announcements(game, index, count).await
+                    }
                     SlideState::Question => self.send_answers_announcements(game).await,
                     SlideState::Answers => self.send_answers_results(game).await,
                     SlideState::AnswersResults => self.send_leaderboard(game).await,
@@ -304,9 +391,13 @@ impl Slide {
             IncomingMessage::Player(IncomingPlayerMessage::IndexAnswer(v))
                 if v < self.answers.len() =>
             {
-                self.user_answers.insert(uuid, (v, Instant::now()));
-                let left_set: HashSet<_> =
-                    game.watchers.players_iter().map(|w| w.key().id).collect();
+                self.user_answers.insert(watcher_id, (v, Instant::now()));
+                let left_set: HashSet<_> = game
+                    .watchers
+                    .specific_iter(WatcherValueKind::Player)
+                    .iter()
+                    .map(|(w, _, _)| w.to_owned())
+                    .collect();
                 let right_set: HashSet<_> = self
                     .user_answers
                     .iter()

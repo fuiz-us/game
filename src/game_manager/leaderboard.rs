@@ -1,14 +1,15 @@
 use dashmap::{mapref::entry::Entry, DashMap};
 use itertools::Itertools;
-use uuid::Uuid;
+
+use super::watcher::WatcherId;
 
 #[derive(Debug, Default)]
 pub struct Leaderboard {
-    mapping: DashMap<Uuid, u64>,
+    mapping: DashMap<WatcherId, u64>,
 }
 
 impl Leaderboard {
-    pub fn add_score(&self, player: Uuid, score: u64) {
+    pub fn add_score(&self, player: WatcherId, score: u64) {
         match self.mapping.entry(player) {
             Entry::Occupied(o) => {
                 let score = o.get().saturating_add(score);
@@ -20,11 +21,11 @@ impl Leaderboard {
         }
     }
 
-    pub fn _remove_player(&self, player: Uuid) {
+    pub fn _remove_player(&self, player: WatcherId) {
         self.mapping.remove(&player);
     }
 
-    pub fn get_scores_descending(&self) -> Vec<(Uuid, u64)> {
+    pub fn get_scores_descending(&self) -> Vec<(WatcherId, u64)> {
         // This is split into two in order to release the lock on mapping
         let values = self
             .mapping
