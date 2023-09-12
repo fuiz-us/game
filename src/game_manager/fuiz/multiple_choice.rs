@@ -406,7 +406,7 @@ impl Slide {
                 if left_set.is_subset(&right_set) {
                     self.send_answers_results(game).await;
                 } else {
-                    game.announce(OutcomingMessage::AnswersCount(
+                    game.announce_host(OutcomingMessage::AnswersCount(
                         left_set.intersection(&right_set).count(),
                     ))
                     .await;

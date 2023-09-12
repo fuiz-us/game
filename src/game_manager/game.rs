@@ -205,6 +205,18 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
+    pub async fn announce_host<O: OutcomingMessage>(&self, message: O) {
+        let serialized_message = message
+            .to_message()
+            .expect("default enum serializer failed");
+
+        for (watcher, session, _) in self.watchers.specific_iter(WatcherValueKind::Host) {
+            if session.send(&serialized_message).await.is_err() {
+                self.remove_watcher_session(watcher);
+            }
+        }
+    }
+
     pub async fn send<O: OutcomingMessage>(&self, message: O, watcher_id: WatcherId) {
         let serialized_message = message
             .to_message()
