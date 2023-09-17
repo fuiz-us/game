@@ -30,7 +30,7 @@ async fn dump(data: web::Data<AppState>) -> impl Responder {
 async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Responder {
     let game_id = data.game_manager.add_game(fuiz.into_inner());
 
-    let checked_game_id = game_id.clone();
+    // let checked_game_id = game_id.clone();
 
     let host_id = WatcherId::default();
 
@@ -42,22 +42,22 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
 
     ongoing_game.reserve_watcher(host_id, WatcherValue::Host)?;
 
-    actix_web::rt::spawn(async move {
-        loop {
-            actix_web::rt::time::sleep(Duration::from_secs(120)).await;
-            let Some(ongoing_game) = data.game_manager.get_game(&checked_game_id) else {
-                break;
-            };
-            if matches!(
-                ongoing_game.state(),
-                game_manager::game::GameState::FinalLeaderboard
-            ) || ongoing_game.updated().elapsed() > Duration::from_secs(280)
-            {
-                data.game_manager.remove_game(&checked_game_id);
-                break;
-            }
-        }
-    });
+    // actix_web::rt::spawn(async move {
+    //     loop {
+    //         actix_web::rt::time::sleep(Duration::from_secs(120)).await;
+    //         let Some(ongoing_game) = data.game_manager.get_game(&checked_game_id) else {
+    //             break;
+    //         };
+    //         if matches!(
+    //             ongoing_game.state(),
+    //             game_manager::game::GameState::FinalLeaderboard
+    //         ) || ongoing_game.updated().elapsed() > Duration::from_secs(280)
+    //         {
+    //             data.game_manager.remove_game(&checked_game_id);
+    //             break;
+    //         }
+    //     }
+    // });
 
     let cookie = CookieBuilder::new("wid", host_id.to_string())
         .same_site(actix_web::cookie::SameSite::None)
