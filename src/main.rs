@@ -88,7 +88,7 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
     Ok(HttpResponse::Accepted().cookie(cookie).body(game_id.id))
 }
 
-#[post("/alive/{game_id}")]
+#[get("/alive/{game_id}")]
 async fn alive(data: web::Data<AppState>, game_id: web::Path<String>) -> impl Responder {
     match data.game_manager.get_game(&GameId {
         id: game_id.into_inner().to_uppercase(),
