@@ -14,7 +14,11 @@ use actix_web::{
 };
 use futures_util::StreamExt;
 use game_manager::{session::Session, GameManager};
-use std::str::FromStr;
+use itertools::Itertools;
+use std::{
+    str::FromStr,
+    sync::{atomic::AtomicU64, Arc},
+};
 
 extern crate pretty_env_logger;
 #[macro_use]
@@ -48,7 +52,7 @@ fn configure_cookie(cookie: CookieBuilder) -> Cookie {
 async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Responder {
     let game_id = data.game_manager.add_game(fuiz.into_inner());
 
-    let checked_game_id = game_id.clone();
+    let stale_game_id = game_id.clone();
 
     let host_id = WatcherId::default();
 
@@ -58,10 +62,13 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
 
     ongoing_game.reserve_watcher(host_id, WatcherValue::Host)?;
 
+    let stale_data = data;
+
+    // Stale Detection
     actix_web::rt::spawn(async move {
         loop {
             actix_web::rt::time::sleep(std::time::Duration::from_secs(60)).await;
-            let Some(ongoing_game) = data.game_manager.get_game(&checked_game_id) else {
+            let Some(ongoing_game) = stale_data.game_manager.get_game(&stale_game_id) else {
                 break;
             };
             if matches!(
@@ -70,7 +77,7 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
             ) || ongoing_game.updated().elapsed() > std::time::Duration::from_secs(280)
             {
                 ongoing_game.mark_as_done().await;
-                data.game_manager.remove_game(&checked_game_id);
+                stale_data.game_manager.remove_game(&stale_game_id);
                 break;
             }
         }
@@ -123,15 +130,46 @@ async fn watch(
         }
     };
 
+    let mut heartbeat_session = session.clone();
+
+    let latest_value = Arc::new(AtomicU64::new(0));
+
+    let sender_latest_value = latest_value.clone();
+    actix_web::rt::spawn(async move {
+        loop {
+            actix_web::rt::time::sleep(std::time::Duration::from_secs(5)).await;
+            let new_value = fastrand::u64(0..u64::MAX);
+            sender_latest_value.store(new_value, atomig::Ordering::SeqCst);
+            if heartbeat_session
+                .ping(&new_value.to_ne_bytes())
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
     actix_web::rt::spawn(async move {
         while let Some(Ok(msg)) = msg_stream.next().await {
             if ongoing_game.state().is_done() {
                 break;
             }
             match msg {
+                actix_ws::Message::Pong(bytes) => {
+                    let last_value = latest_value.load(atomig::Ordering::SeqCst);
+                    if let Ok(actual_bytes) = bytes.into_iter().collect_vec().try_into() {
+                        let value = u64::from_ne_bytes(actual_bytes);
+                        if last_value != value {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
                 actix_ws::Message::Ping(bytes) => {
                     if session.pong(&bytes).await.is_err() {
-                        return;
+                        break;
                     }
                 }
                 actix_ws::Message::Text(s) => {
