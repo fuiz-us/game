@@ -1,89 +1,498 @@
-use std::fmt::Debug;
+use std::{
+    fmt::Debug,
+    sync::{Arc, Mutex},
+};
 
-use dashmap::DashMap;
+use actix_web::rt::time::Instant;
+use actix_ws::Closed;
+use erased_serde::serialize_trait_object;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use super::{fuiz::Fuiz, session::Session};
+use crate::game_manager::watcher::WatcherValue;
 
-const GAME_ID_LENGTH: usize = 6;
-const EASY_ALPHABET: [char; 20] = [
-    'A', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y',
-    'Z',
-];
+use super::{
+    fuiz::config::FuizConfig,
+    game_id::GameId,
+    leaderboard::Leaderboard,
+    names::{Names, NamesError},
+    session::Tunnel,
+    watcher::{WatcherId, WatcherValueKind, Watchers},
+};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct GameId {
-    pub id: String,
+#[derive(Debug, Clone, Copy)]
+pub enum GameState {
+    WaitingScreen,
+    Slide(usize),
+    FinalLeaderboard,
 }
 
-impl GameId {
-    pub fn new() -> Self {
-        Self {
-            id: fastrand::choose_multiple(EASY_ALPHABET.into_iter(), GAME_ID_LENGTH)
-                .into_iter()
-                .collect(),
-        }
+impl GameState {
+    pub fn is_done(&self) -> bool {
+        matches!(self, GameState::FinalLeaderboard)
     }
 }
 
-pub struct Game {
+pub struct Game<T: Tunnel> {
     pub game_id: GameId,
-    pub fuiz: Fuiz,
-    pub listeners: DashMap<Uuid, Session>,
+    pub fuiz_config: FuizConfig,
+    pub watchers: Watchers<T>,
+    pub names: Names,
+    pub leaderboard: Leaderboard,
+    pub state: Arc<Mutex<GameState>>,
+    pub updated: Arc<Mutex<Instant>>,
 }
 
-impl Debug for Game {
+impl<T: Tunnel> Debug for Game<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Game")
             .field("game_id", &self.game_id)
-            .field("fuiz", &self.fuiz)
+            .field("fuiz", &self.fuiz_config)
             .finish()
     }
 }
 
-#[derive(Debug, Serialize, Clone, Copy)]
-enum OutcomingMessage {
-    PeopleCount(u64),
+pub trait OutgoingMessage: Serialize + Clone {
+    fn identifier(&self) -> &'static str;
+
+    fn to_message(&self) -> Result<String, serde_json::Error> {
+        Ok(format!(
+            "{{\"{}\":{}}}",
+            self.identifier(),
+            serde_json::to_string(self)?
+        ))
+    }
+}
+
+pub trait StateMessage: erased_serde::Serialize {
+    fn identifier(&self) -> &'static str;
+}
+
+serialize_trait_object!(StateMessage);
+
+pub trait StateMessageSend {
+    fn to_message(&self) -> Result<String, serde_json::Error>;
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub enum IncomingMessage {
+    Host(IncomingHostMessage),
+    Unassigned(IncomingUnassignedMessage),
+    Player(IncomingPlayerMessage),
+}
+
+impl IncomingMessage {
+    fn follows(&self, sender_kind: &WatcherValueKind) -> bool {
+        matches!(
+            (self, sender_kind),
+            (IncomingMessage::Host(_), WatcherValueKind::Host)
+                | (IncomingMessage::Player(_), WatcherValueKind::Player)
+                | (IncomingMessage::Unassigned(_), WatcherValueKind::Unassigned)
+        )
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub enum IncomingPlayerMessage {
+    IndexAnswer(usize),
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub enum IncomingUnassignedMessage {
+    NameRequest(String),
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
-pub enum IncomingMessage {
-    WhenAreWeStarting,
+pub enum IncomingHostMessage {
+    Next,
 }
 
-impl Game {
-    pub async fn start(&self) {
-        loop {
-            self.announce(OutcomingMessage::PeopleCount(self.listeners.len() as u64))
-                .await;
-            actix_web::rt::time::sleep(std::time::Duration::from_secs(5)).await;
+#[derive(Debug, Serialize, Clone)]
+pub enum GameOutgoingMessage {
+    WaitingScreen(WaitingScreenMessage),
+    NameChoose,
+    NameAssign(String),
+    NameError(NamesError),
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WaitingScreenMessage {
+    exact_count: usize,
+    players: Vec<String>,
+    truncated: bool,
+}
+
+impl OutgoingMessage for GameOutgoingMessage {
+    fn identifier(&self) -> &'static str {
+        "Game"
+    }
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub enum GameStateMessage {
+    WaitingScreen(WaitingScreenMessage),
+    Leaderboard(Vec<(String, u64)>),
+}
+
+impl StateMessage for GameStateMessage {
+    fn identifier(&self) -> &'static str {
+        "Game"
+    }
+}
+
+impl StateMessageSend for Box<dyn StateMessage> {
+    fn to_message(&self) -> Result<String, serde_json::Error> {
+        Ok(format!(
+            "{{\"{}\":{}}}",
+            self.identifier(),
+            serde_json::to_string(self)?
+        ))
+    }
+}
+
+impl<T: Tunnel> Game<T> {
+    pub fn new(game_id: GameId, fuiz: FuizConfig) -> Self {
+        Self {
+            game_id,
+            fuiz_config: fuiz,
+            watchers: Watchers::default(),
+            names: Names::default(),
+            leaderboard: Leaderboard::default(),
+            state: Arc::new(Mutex::new(GameState::WaitingScreen)),
+            updated: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
-    async fn announce(&self, message: OutcomingMessage) {
-        let serialized_message =
-            serde_json::to_string(&message).expect("default enum serializer failed");
+    pub async fn play(&self) {
+        info!("PLAYING {}", self.game_id.id);
+        self.fuiz_config.play(self).await;
+    }
 
-        for listener in self.listeners.iter() {
-            let session = listener.value();
+    pub fn change_state(&self, game_state: GameState) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = game_state;
+        }
+        self.update();
+    }
+
+    pub fn state(&self) -> GameState {
+        if let Ok(state) = self.state.lock() {
+            *state
+        } else {
+            GameState::FinalLeaderboard
+        }
+    }
+
+    pub fn update(&self) {
+        if let Ok(mut updated) = self.updated.lock() {
+            *updated = Instant::now();
+        }
+    }
+
+    pub fn updated(&self) -> Instant {
+        if let Ok(updated) = self.updated.lock() {
+            *updated
+        } else {
+            Instant::now()
+        }
+    }
+
+    pub fn leaderboard(&self) -> Vec<(String, u64)> {
+        self.leaderboard
+            .get_scores_descending()
+            .into_iter()
+            .map(|(i, s)| (self.names.get_name(&i).unwrap_or("Unknown".to_owned()), s))
+            .collect_vec()
+    }
+
+    pub async fn announce<O: OutgoingMessage>(&self, message: O) {
+        let serialized_message = message
+            .to_message()
+            .expect("default enum serializer failed");
+
+        let mut watchers_to_be_removed = Vec::new();
+
+        for (watcher, session, _) in self.watchers.vec() {
             if session.send(&serialized_message).await.is_err() {
-                self.remove_listener(listener.key().to_owned());
+                watchers_to_be_removed.push(watcher);
+            }
+        }
+
+        for watcher in watchers_to_be_removed {
+            self.remove_watcher_session(watcher).await;
+        }
+    }
+
+    pub async fn announce_host<O: OutgoingMessage>(&self, message: O) {
+        let serialized_message = message
+            .to_message()
+            .expect("default enum serializer failed");
+
+        let mut watchers_to_be_removed = Vec::new();
+
+        for (watcher, session, _) in self.watchers.specific_vec(WatcherValueKind::Host) {
+            if session.send(&serialized_message).await.is_err() {
+                watchers_to_be_removed.push(watcher);
+            }
+        }
+
+        for watcher in watchers_to_be_removed {
+            self.remove_watcher_session(watcher).await;
+        }
+    }
+
+    pub async fn send<O: OutgoingMessage>(&self, message: O, watcher_id: WatcherId) {
+        let serialized_message = message
+            .to_message()
+            .expect("default enum serializer failed");
+
+        self.watchers.send(&serialized_message, watcher_id).await;
+    }
+
+    pub async fn mark_as_done(&self) {
+        self.change_state(GameState::FinalLeaderboard);
+        let watchers = self.watchers.vec().iter().map(|(x, _, _)| *x).collect_vec();
+        for watcher in watchers {
+            self.remove_watcher_session(watcher).await;
+        }
+    }
+
+    pub async fn receive_message(&self, watcher_id: WatcherId, message: IncomingMessage) {
+        let Some(watcher_value) = self.watchers.get_watcher_value(watcher_id) else {
+            return;
+        };
+
+        if !message.follows(&watcher_value.kind()) {
+            return;
+        }
+
+        self.update();
+
+        match message {
+            IncomingMessage::Unassigned(IncomingUnassignedMessage::NameRequest(s)) => {
+                match self.names.set_name(watcher_id, s) {
+                    Ok(resulting_name) => {
+                        self.watchers.update_watcher_value(
+                            watcher_id,
+                            WatcherValue::Player(resulting_name.clone()),
+                        );
+                        self.send(GameOutgoingMessage::NameAssign(resulting_name), watcher_id)
+                            .await;
+
+                        self.announce_waiting().await;
+
+                        self.send(
+                            GameOutgoingMessage::WaitingScreen(self.get_waiting_message()),
+                            watcher_id,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        self.send(GameOutgoingMessage::NameError(e), watcher_id)
+                            .await;
+                    }
+                }
+            }
+            message => match self.state() {
+                GameState::WaitingScreen => {
+                    if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
+                        self.play().await;
+                    }
+                }
+                GameState::Slide(i) => {
+                    self.fuiz_config
+                        .receive_message(self, watcher_id, message, i)
+                        .await;
+                }
+                GameState::FinalLeaderboard => {
+                    if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
+                        self.mark_as_done().await;
+                    }
+                }
+            },
+        }
+    }
+
+    fn get_names(&self) -> Vec<String> {
+        self.watchers
+            .specific_vec(WatcherValueKind::Player)
+            .into_iter()
+            .filter_map(|(_, _, x)| match x {
+                WatcherValue::Player(s) => Some(s.to_owned()),
+                _ => None,
+            })
+            .collect_vec()
+    }
+
+    fn get_names_limited(&self, limit: usize) -> Vec<String> {
+        self.watchers
+            .specific_vec(WatcherValueKind::Player)
+            .into_iter()
+            .take(limit)
+            .filter_map(|(_, _, x)| match x {
+                WatcherValue::Player(s) => Some(s.to_owned()),
+                _ => None,
+            })
+            .collect_vec()
+    }
+
+    pub fn state_message(&self) -> Box<dyn StateMessage> {
+        match self.state() {
+            GameState::WaitingScreen => {
+                Box::new(GameStateMessage::WaitingScreen(self.get_waiting_message()))
+            }
+            GameState::Slide(i) => self
+                .fuiz_config
+                .state_message(self, i)
+                .expect("Index was violated"),
+            GameState::FinalLeaderboard => {
+                Box::new(GameStateMessage::Leaderboard(self.leaderboard()))
             }
         }
     }
 
-    pub async fn receive_message(&self, id: Uuid, message: IncomingMessage) {
-        info!("GOT {:?} FROM {}", message, id);
+    pub fn get_waiting_message(&self) -> WaitingScreenMessage {
+        let exact_count = self.watchers.specific_count(WatcherValueKind::Player);
+
+        const LIMIT: usize = 50;
+
+        if exact_count < LIMIT {
+            let names = self.get_names();
+            WaitingScreenMessage {
+                exact_count: names.len(),
+                players: names,
+                truncated: false,
+            }
+        } else {
+            let names = self.get_names_limited(LIMIT);
+            WaitingScreenMessage {
+                exact_count,
+                players: names,
+                truncated: true,
+            }
+        }
     }
 
-    pub fn add_listener(&self, id: Uuid, session: Session) {
-        info!("HI {}", id);
-        self.listeners.insert(id, session);
+    pub async fn announce_waiting(&self) {
+        if let GameState::WaitingScreen = self.state() {
+            self.announce_host(GameOutgoingMessage::WaitingScreen(
+                self.get_waiting_message(),
+            ))
+            .await;
+        }
     }
 
-    pub fn remove_listener(&self, id: Uuid) {
-        info!("BYE BYE {}", &id);
-        self.listeners.remove(&id);
+    pub async fn add_unassigned(&self, watcher: WatcherId, session: T) {
+        self.watchers
+            .add_watcher(watcher, WatcherValue::Unassigned, session);
+
+        self.send(GameOutgoingMessage::NameChoose, watcher).await;
+    }
+
+    pub fn reserve_watcher(
+        &self,
+        watcher: WatcherId,
+        watcher_value: WatcherValue,
+    ) -> Result<(), NamesError> {
+        if let WatcherValue::Player(s) = watcher_value.clone() {
+            self.names.set_name(watcher, s)?;
+        }
+
+        self.watchers.reserve_watcher(watcher, watcher_value);
+
+        Ok(())
+    }
+
+    pub async fn update_session(&self, watcher_id: WatcherId, session: T) -> Result<(), Closed> {
+        match self.watchers.get_watcher_value(watcher_id) {
+            Some(WatcherValue::Player(name)) => {
+                session
+                    .send(
+                        &GameOutgoingMessage::NameAssign(name)
+                            .to_message()
+                            .expect("Serializer should never fail"),
+                    )
+                    .await?;
+            }
+            Some(WatcherValue::Unassigned) => {
+                session
+                    .send(
+                        &GameOutgoingMessage::NameChoose
+                            .to_message()
+                            .expect("Serializer should never fail"),
+                    )
+                    .await?;
+            }
+            _ => {}
+        }
+
+        session
+            .send(
+                &self
+                    .state_message()
+                    .to_message()
+                    .expect("default serializer shouldn't fail"),
+            )
+            .await?;
+
+        self.watchers.update_watcher_session(watcher_id, session);
+
+        self.announce_waiting().await;
+
+        Ok(())
+    }
+
+    pub fn has_watcher(&self, watcher_id: WatcherId) -> bool {
+        self.watchers.has_watcher(watcher_id)
+    }
+
+    pub async fn remove_watcher_session(&self, watcher: WatcherId) {
+        self.watchers.remove_watcher_session(&watcher).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mockall::predicate;
+
+    use crate::game_manager::{
+        fuiz::config::FuizConfig,
+        game::Game,
+        game_id::GameId,
+        session::MockTunnel,
+        watcher::{WatcherId, WatcherValue},
+    };
+
+    #[actix_web::test]
+    async fn waiting_screen() {
+        let fuiz = FuizConfig::new("Title".to_owned(), vec![]);
+
+        let game = Game::new(GameId::new(), fuiz);
+
+        let mut mock_host = MockTunnel::new();
+
+        let host_id = WatcherId::default();
+
+        let mut mock_player = MockTunnel::new();
+
+        let player_id = WatcherId::default();
+
+        mock_host
+            .expect_send()
+            .with(predicate::eq(
+                r#"{"Game":{"WaitingScreen":{"exact_count":0,"players":[],"truncated":false}}}"#,
+            ))
+            .returning(|_| Ok(()));
+
+        mock_player
+            .expect_send()
+            .with(predicate::eq(r#"{"Game":"NameChoose"}"#))
+            .times(1)
+            .returning(|_| Ok(()));
+
+        assert!(game.reserve_watcher(host_id, WatcherValue::Host).is_ok());
+        assert!(game.update_session(host_id, mock_host).await.is_ok(),);
+
+        game.add_unassigned(player_id, mock_player).await;
     }
 }
