@@ -88,6 +88,17 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
     Ok(HttpResponse::Accepted().cookie(cookie).body(game_id.id))
 }
 
+#[post("/alive/{game_id}")]
+async fn alive(data: web::Data<AppState>, game_id: web::Path<String>) -> impl Responder {
+    match data.game_manager.get_game(&GameId {
+        id: game_id.into_inner().to_uppercase(),
+    }) {
+        Some(x) => !x.state().is_done(),
+        None => false,
+    }
+    .to_string()
+}
+
 #[get("/watch/{game_id}")]
 async fn watch(
     data: web::Data<AppState>,
@@ -207,6 +218,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .app_data(app_state.clone())
             .route("/hello", web::get().to(|| async { "Hello World!" }))
+            .service(alive)
             .service(add)
             .service(watch)
     })
