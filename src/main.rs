@@ -91,7 +91,7 @@ async fn watch(
     let (mut response, mut session, mut msg_stream) = actix_ws::handle(&req, body)?;
 
     let game_id = GameId {
-        id: game_id.into_inner(),
+        id: game_id.into_inner().to_uppercase(),
     };
 
     let Some(ongoing_game) = data.game_manager.get_game(&game_id) else {
