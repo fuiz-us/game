@@ -42,20 +42,13 @@ fn configure_cookie(cookie: CookieBuilder) -> Cookie {
         .finish()
 }
 
-#[get("/dump")]
-async fn dump(data: web::Data<AppState>) -> impl Responder {
-    format!("{:?}", data.game_manager)
-}
-
 #[post("/add")]
 async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Responder {
     let game_id = data.game_manager.add_game(fuiz.into_inner());
 
-    // let checked_game_id = game_id.clone();
+    let checked_game_id = game_id.clone();
 
     let host_id = WatcherId::default();
-
-    info!("{:?}", host_id);
 
     let Some(ongoing_game) = data.game_manager.get_game(&game_id) else {
         return Err(actix_web::error::ErrorNotFound("GameId not found"));
@@ -63,58 +56,27 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
 
     ongoing_game.reserve_watcher(host_id, WatcherValue::Host)?;
 
-    // actix_web::rt::spawn(async move {
-    //     loop {
-    //         actix_web::rt::time::sleep(Duration::from_secs(120)).await;
-    //         let Some(ongoing_game) = data.game_manager.get_game(&checked_game_id) else {
-    //             break;
-    //         };
-    //         if matches!(
-    //             ongoing_game.state(),
-    //             game_manager::game::GameState::FinalLeaderboard
-    //         ) || ongoing_game.updated().elapsed() > Duration::from_secs(280)
-    //         {
-    //             data.game_manager.remove_game(&checked_game_id);
-    //             break;
-    //         }
-    //     }
-    // });
+    actix_web::rt::spawn(async move {
+        loop {
+            actix_web::rt::time::sleep(std::time::Duration::from_secs(60)).await;
+            let Some(ongoing_game) = data.game_manager.get_game(&checked_game_id) else {
+                break;
+            };
+            if matches!(
+                ongoing_game.state(),
+                game_manager::game::GameState::FinalLeaderboard
+            ) || ongoing_game.updated().elapsed() > std::time::Duration::from_secs(280)
+            {
+                ongoing_game.change_state(game_manager::game::GameState::FinalLeaderboard);
+                data.game_manager.remove_game(&checked_game_id);
+                break;
+            }
+        }
+    });
 
     let cookie = configure_cookie(CookieBuilder::new("wid", host_id.to_string()));
 
     Ok(HttpResponse::Accepted().cookie(cookie).body(game_id.id))
-}
-
-#[post("/start/{game_id}")]
-async fn start(
-    data: web::Data<AppState>,
-    game_id: web::Path<String>,
-) -> Result<HttpResponse, actix_web::Error> {
-    let game_id = GameId {
-        id: game_id.into_inner(),
-    };
-
-    let Some(ongoing_game) = data.game_manager.get_game(&game_id) else {
-        return Err(actix_web::error::ErrorNotFound("GameId not found"));
-    };
-
-    actix_web::rt::spawn(async move { ongoing_game.play().await });
-
-    HttpResponse::Accepted().await
-}
-
-#[post("/state/{game_id}")]
-async fn state(data: web::Data<AppState>, game_id: web::Path<String>) -> impl Responder {
-    let game_id = GameId {
-        id: game_id.into_inner(),
-    };
-
-    let Some(ongoing_game) = data.game_manager.get_game(&game_id) else {
-        return Err(actix_web::error::ErrorNotFound("GameId not found"));
-    };
-
-    serde_json::to_string(ongoing_game.state_message().as_ref())
-        .map_err(|_| actix_web::error::ErrorInternalServerError("oh no"))
 }
 
 #[get("/watch/{game_id}")]
@@ -161,6 +123,9 @@ async fn watch(
 
     actix_web::rt::spawn(async move {
         while let Some(Ok(msg)) = msg_stream.next().await {
+            if ongoing_game.state().is_done() {
+                break;
+            }
             match msg {
                 actix_ws::Message::Ping(bytes) => {
                     if session.pong(&bytes).await.is_err() {
@@ -170,11 +135,8 @@ async fn watch(
                 actix_ws::Message::Text(s) => {
                     if let Ok(message) = serde_json::from_str(s.as_ref()) {
                         let inner_game = ongoing_game.clone();
-                        let inner_data = data.clone();
                         actix_web::rt::spawn(async move {
-                            inner_game
-                                .receive_message(&inner_data.game_manager, watcher_id, message)
-                                .await;
+                            inner_game.receive_message(watcher_id, message).await;
                         });
                     }
                 }
@@ -204,10 +166,8 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .app_data(app_state.clone())
             .route("/hello", web::get().to(|| async { "Hello World!" }))
-            .service(dump)
             .service(add)
             .service(watch)
-            .service(start)
     })
     .bind((
         if cfg!(debug_assertions) {

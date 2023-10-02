@@ -18,7 +18,6 @@ use super::{
     names::{Names, NamesError},
     session::Tunnel,
     watcher::{WatcherId, WatcherValueKind, Watchers},
-    GameManager,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -26,6 +25,12 @@ pub enum GameState {
     WaitingScreen,
     Slide(usize),
     FinalLeaderboard,
+}
+
+impl GameState {
+    pub fn is_done(&self) -> bool {
+        matches!(self, GameState::FinalLeaderboard)
+    }
 }
 
 pub struct Game<T: Tunnel> {
@@ -171,14 +176,11 @@ impl<T: Tunnel> Game<T> {
     }
 
     pub fn state(&self) -> GameState {
-        {
-            if let Ok(state) = self.state.lock() {
-                *state
-            } else {
-                GameState::FinalLeaderboard
-            }
+        if let Ok(state) = self.state.lock() {
+            *state
+        } else {
+            GameState::FinalLeaderboard
         }
-        .clone()
     }
 
     pub fn update(&self) {
@@ -247,12 +249,11 @@ impl<T: Tunnel> Game<T> {
         self.watchers.send(&serialized_message, watcher_id).await;
     }
 
-    pub async fn receive_message(
-        &self,
-        game_manager: &GameManager<T>,
-        watcher_id: WatcherId,
-        message: IncomingMessage,
-    ) {
+    pub fn mark_as_done(&self) {
+        self.change_state(GameState::FinalLeaderboard);
+    }
+
+    pub async fn receive_message(&self, watcher_id: WatcherId, message: IncomingMessage) {
         let Some(watcher_value) = self.watchers.get_watcher_value(watcher_id) else {
             return;
         };
@@ -260,6 +261,8 @@ impl<T: Tunnel> Game<T> {
         if !message.follows(&watcher_value.kind()) {
             return;
         }
+
+        self.update();
 
         match message {
             IncomingMessage::Unassigned(IncomingUnassignedMessage::NameRequest(s)) => {
@@ -299,7 +302,7 @@ impl<T: Tunnel> Game<T> {
                 }
                 GameState::FinalLeaderboard => {
                     if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
-                        game_manager.remove_game(&self.game_id);
+                        self.mark_as_done();
                     }
                 }
             },
@@ -359,7 +362,7 @@ impl<T: Tunnel> Game<T> {
         } else {
             let names = self.get_names_limited(LIMIT);
             WaitingScreenMessage {
-                exact_count: exact_count,
+                exact_count,
                 players: names,
                 truncated: true,
             }
@@ -375,56 +378,11 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    fn players(&self) -> Vec<String> {
-        self.watchers
-            .specific_iter(WatcherValueKind::Player)
-            .into_iter()
-            .filter_map(|(_, _, w)| match w {
-                WatcherValue::Player(s) => Some(s.to_owned()),
-                _ => None,
-            })
-            .collect_vec()
-    }
-
     pub async fn add_unassigned(&self, watcher: WatcherId, session: T) {
         self.watchers
             .add_watcher(watcher, WatcherValue::Unassigned, session);
 
         self.send(GameOutcomingMessage::NameChoose, watcher).await;
-    }
-
-    pub async fn add_watcher(
-        &self,
-        watcher: WatcherId,
-        watcher_value: WatcherValue,
-        session: T,
-    ) -> Result<(), NamesError> {
-        match watcher_value.clone() {
-            WatcherValue::Player(s) => {
-                self.names.set_name(watcher, s)?;
-            }
-            WatcherValue::Unassigned => {
-                if session
-                    .send(
-                        &GameOutcomingMessage::NameChoose
-                            .to_message()
-                            .expect("Serializer should never fail"),
-                    )
-                    .await
-                    .is_err()
-                {
-                    // TODO: RETURN AN ERROR
-                    return Ok(());
-                }
-            }
-            _ => {}
-        }
-
-        self.watchers.add_watcher(watcher, watcher_value, session);
-
-        self.announce_waiting().await;
-
-        Ok(())
     }
 
     pub fn reserve_watcher(
@@ -491,14 +449,10 @@ impl<T: Tunnel> Game<T> {
 
 #[cfg(test)]
 mod tests {
-    use mockall::{predicate, Sequence};
+    use mockall::predicate;
 
     use crate::game_manager::{
-        fuiz::{
-            config::FuizConfig,
-            media::{Image, InternetImage},
-            theme::Theme,
-        },
+        fuiz::config::FuizConfig,
         game::Game,
         game_id::GameId,
         session::MockTunnel,
@@ -511,8 +465,6 @@ mod tests {
 
         let game = Game::new(GameId::new(), fuiz);
 
-        assert!(game.players().is_empty());
-
         let mut mock_host = MockTunnel::new();
 
         let host_id = WatcherId::default();
@@ -521,38 +473,22 @@ mod tests {
 
         let player_id = WatcherId::default();
 
-        let player_value = WatcherValue::Player("Barish".to_owned());
-
-        let mut sequence_host = Sequence::new();
-
         mock_host
             .expect_send()
-            .with(predicate::eq(r#"{"WaitingScreen":[]}"#))
-            .times(1)
-            .in_sequence(&mut sequence_host)
-            .returning(|_| Ok(()));
-
-        mock_host
-            .expect_send()
-            .with(predicate::eq(r#"{"WaitingScreen":["Barish"]}"#))
-            .times(1)
-            .in_sequence(&mut sequence_host)
+            .with(predicate::eq(
+                r#"{"Game":{"WaitingScreen":{"exact_count":0,"players":[],"truncated":false}}}"#,
+            ))
             .returning(|_| Ok(()));
 
         mock_player
             .expect_send()
-            .with(predicate::eq(r#"{"WaitingScreen":["Barish"]}"#))
+            .with(predicate::eq(r#"{"Game":"NameChoose"}"#))
             .times(1)
             .returning(|_| Ok(()));
 
-        assert_eq!(
-            game.add_watcher(host_id, WatcherValue::Host, mock_host)
-                .await,
-            Ok(())
-        );
-        assert_eq!(
-            game.add_watcher(player_id, player_value, mock_player).await,
-            Ok(())
-        );
+        assert!(game.reserve_watcher(host_id, WatcherValue::Host).is_ok());
+        assert!(game.update_session(host_id, mock_host).await.is_ok(),);
+
+        game.add_unassigned(player_id, mock_player).await;
     }
 }
