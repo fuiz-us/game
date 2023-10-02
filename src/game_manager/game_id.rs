@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-const GAME_ID_LENGTH: usize = 1;
+const GAME_ID_LENGTH: usize = 4;
 const EASY_ALPHABET: [char; 20] = [
     'A', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y',
     'Z',
