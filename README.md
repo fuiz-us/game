@@ -6,7 +6,7 @@ Host live quizzes freely
 
 [![License](https://img.shields.io/gitlab/license/opencode-mit/fuiz?style=for-the-badge)](https://gitlab.com/opencode-mit/fuiz/-/raw/main/LICENSE)
 
-## Installation
+## Developing
 
 This is the backend component. It can be run with:
 
