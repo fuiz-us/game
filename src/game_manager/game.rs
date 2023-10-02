@@ -104,10 +104,17 @@ pub enum IncomingHostMessage {
 
 #[derive(Debug, Serialize, Clone)]
 pub enum GameOutcomingMessage {
-    WaitingScreen(Vec<String>),
+    WaitingScreen(WaitingScreenMessage),
     NameChoose,
     NameAssign(String),
     NameError(NamesError),
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WaitingScreenMessage {
+    exact_count: usize,
+    players: Vec<String>,
+    truncated: bool,
 }
 
 impl OutcomingMessage for GameOutcomingMessage {
@@ -118,7 +125,7 @@ impl OutcomingMessage for GameOutcomingMessage {
 
 #[derive(Debug, Serialize, Clone)]
 pub enum GameStateMessage {
-    WaitingScreen(Vec<String>),
+    WaitingScreen(WaitingScreenMessage),
     Leaderboard(Vec<(String, u64)>),
 }
 
@@ -164,11 +171,14 @@ impl<T: Tunnel> Game<T> {
     }
 
     pub fn state(&self) -> GameState {
-        if let Ok(state) = self.state.lock() {
-            *state
-        } else {
-            GameState::FinalLeaderboard
+        {
+            if let Ok(state) = self.state.lock() {
+                *state
+            } else {
+                GameState::FinalLeaderboard
+            }
         }
+        .clone()
     }
 
     pub fn update(&self) {
@@ -198,10 +208,16 @@ impl<T: Tunnel> Game<T> {
             .to_message()
             .expect("default enum serializer failed");
 
+        let mut watchers_to_be_removed = Vec::new();
+
         for (watcher, session, _) in self.watchers.iter() {
             if session.send(&serialized_message).await.is_err() {
-                self.remove_watcher_session(watcher);
+                watchers_to_be_removed.push(watcher);
             }
+        }
+
+        for watcher in watchers_to_be_removed {
+            self.remove_watcher_session(watcher);
         }
     }
 
@@ -210,10 +226,16 @@ impl<T: Tunnel> Game<T> {
             .to_message()
             .expect("default enum serializer failed");
 
+        let mut watchers_to_be_removed = Vec::new();
+
         for (watcher, session, _) in self.watchers.specific_iter(WatcherValueKind::Host) {
             if session.send(&serialized_message).await.is_err() {
-                self.remove_watcher_session(watcher);
+                watchers_to_be_removed.push(watcher);
             }
+        }
+
+        for watcher in watchers_to_be_removed {
+            self.remove_watcher_session(watcher);
         }
     }
 
@@ -231,8 +253,6 @@ impl<T: Tunnel> Game<T> {
         watcher_id: WatcherId,
         message: IncomingMessage,
     ) {
-        info!("GOT {:?} FROM {:?}", message, watcher_id);
-
         let Some(watcher_value) = self.watchers.get_watcher_value(watcher_id) else {
             return;
         };
@@ -240,13 +260,6 @@ impl<T: Tunnel> Game<T> {
         if !message.follows(&watcher_value.kind()) {
             return;
         }
-
-        let state = match self.state.lock() {
-            Ok(state) => *state,
-            _ => return,
-        };
-
-        info!("THAT MESSAGE IS LEGIT");
 
         match message {
             IncomingMessage::Unassigned(IncomingUnassignedMessage::NameRequest(s)) => {
@@ -258,10 +271,14 @@ impl<T: Tunnel> Game<T> {
                         );
                         self.send(GameOutcomingMessage::NameAssign(resulting_name), watcher_id)
                             .await;
-                        if let GameState::WaitingScreen = state {
-                            self.announce(GameOutcomingMessage::WaitingScreen(self.get_names()))
-                                .await;
-                        }
+
+                        self.announce_waiting().await;
+
+                        self.send(
+                            GameOutcomingMessage::WaitingScreen(self.get_waiting_message()),
+                            watcher_id,
+                        )
+                        .await;
                     }
                     Err(e) => {
                         self.send(GameOutcomingMessage::NameError(e), watcher_id)
@@ -269,7 +286,7 @@ impl<T: Tunnel> Game<T> {
                     }
                 }
             }
-            message => match state {
+            message => match self.state() {
                 GameState::WaitingScreen => {
                     if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
                         self.play().await;
@@ -300,9 +317,23 @@ impl<T: Tunnel> Game<T> {
             .collect_vec()
     }
 
+    fn get_names_limited(&self, limit: usize) -> Vec<String> {
+        self.watchers
+            .specific_iter(WatcherValueKind::Player)
+            .into_iter()
+            .take(limit)
+            .filter_map(|(_, _, x)| match x {
+                WatcherValue::Player(s) => Some(s.to_owned()),
+                _ => None,
+            })
+            .collect_vec()
+    }
+
     pub fn state_message(&self) -> Box<dyn StateMessage> {
         match self.state() {
-            GameState::WaitingScreen => Box::new(GameStateMessage::WaitingScreen(self.get_names())),
+            GameState::WaitingScreen => {
+                Box::new(GameStateMessage::WaitingScreen(self.get_waiting_message()))
+            }
             GameState::Slide(i) => self
                 .fuiz_config
                 .state_message(self, i)
@@ -313,15 +344,34 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    pub async fn announce_waiting(&self) {
-        let state = match self.state.lock() {
-            Ok(state) => *state,
-            _ => return,
-        };
+    pub fn get_waiting_message(&self) -> WaitingScreenMessage {
+        let exact_count = self.watchers.specific_count(WatcherValueKind::Player);
 
-        if let GameState::WaitingScreen = state {
-            self.announce(GameOutcomingMessage::WaitingScreen(self.get_names()))
-                .await;
+        const LIMIT: usize = 50;
+
+        if exact_count < LIMIT {
+            let names = self.get_names();
+            WaitingScreenMessage {
+                exact_count: names.len(),
+                players: names,
+                truncated: false,
+            }
+        } else {
+            let names = self.get_names_limited(LIMIT);
+            WaitingScreenMessage {
+                exact_count: exact_count,
+                players: names,
+                truncated: true,
+            }
+        }
+    }
+
+    pub async fn announce_waiting(&self) {
+        if let GameState::WaitingScreen = self.state() {
+            self.announce_host(GameOutcomingMessage::WaitingScreen(
+                self.get_waiting_message(),
+            ))
+            .await;
         }
     }
 
@@ -336,14 +386,19 @@ impl<T: Tunnel> Game<T> {
             .collect_vec()
     }
 
+    pub async fn add_unassigned(&self, watcher: WatcherId, session: T) {
+        self.watchers
+            .add_watcher(watcher, WatcherValue::Unassigned, session);
+
+        self.send(GameOutcomingMessage::NameChoose, watcher).await;
+    }
+
     pub async fn add_watcher(
         &self,
         watcher: WatcherId,
         watcher_value: WatcherValue,
         session: T,
     ) -> Result<(), NamesError> {
-        info!("HI {:?}", watcher);
-
         match watcher_value.clone() {
             WatcherValue::Player(s) => {
                 self.names.set_name(watcher, s)?;
@@ -367,10 +422,7 @@ impl<T: Tunnel> Game<T> {
 
         self.watchers.add_watcher(watcher, watcher_value, session);
 
-        if matches!(self.state(), GameState::WaitingScreen) {
-            self.announce(GameOutcomingMessage::WaitingScreen(self.players()))
-                .await;
-        }
+        self.announce_waiting().await;
 
         Ok(())
     }
@@ -423,6 +475,8 @@ impl<T: Tunnel> Game<T> {
 
         self.watchers.update_watcher_session(watcher_id, session);
 
+        self.announce_waiting().await;
+
         Ok(())
     }
 
@@ -431,7 +485,6 @@ impl<T: Tunnel> Game<T> {
     }
 
     pub fn remove_watcher_session(&self, watcher: WatcherId) {
-        info!("BYE BYE {:?}", &watcher);
         self.watchers.remove_watcher_session(&watcher);
     }
 }
@@ -454,16 +507,7 @@ mod tests {
 
     #[actix_web::test]
     async fn waiting_screen() {
-        let fuiz = FuizConfig::new(
-            "Title".to_owned(),
-            "Description".to_owned(),
-            Image::Internet(InternetImage {
-                url: "https://gitlab.com/adhami3310/Impression/-/avatar".to_owned(),
-                alt: "impression avatar".to_owned(),
-            }),
-            Theme::Classic,
-            vec![],
-        );
+        let fuiz = FuizConfig::new("Title".to_owned(), vec![]);
 
         let game = Game::new(GameId::new(), fuiz);
 

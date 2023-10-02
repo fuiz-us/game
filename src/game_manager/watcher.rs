@@ -82,7 +82,7 @@ impl<T: Tunnel> Watchers<T> {
             .collect_vec()
     }
 
-    pub fn _specific_count(&self, filter: WatcherValueKind) -> usize {
+    pub fn specific_count(&self, filter: WatcherValueKind) -> usize {
         self.reverse_watchers[filter].len()
     }
 

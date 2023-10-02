@@ -4,17 +4,12 @@ use crate::game_manager::{game::StateMessage, session::Tunnel, watcher::WatcherI
 
 use super::{
     super::game::{Game, GameState, IncomingMessage},
-    media::Image,
     multiple_choice,
-    theme::Theme,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FuizConfig {
     title: String,
-    description: String,
-    thumbnail: Image,
-    theme: Theme,
     slides: Vec<Slide>,
 }
 
@@ -25,20 +20,8 @@ pub enum Slide {
 
 impl FuizConfig {
     #[cfg(test)]
-    pub fn new(
-        title: String,
-        description: String,
-        thumbnail: Image,
-        theme: Theme,
-        slides: Vec<Slide>,
-    ) -> Self {
-        Self {
-            title,
-            description,
-            thumbnail,
-            theme,
-            slides,
-        }
+    pub fn new(title: String, slides: Vec<Slide>) -> Self {
+        Self { title, slides }
     }
 
     pub async fn play<T: Tunnel>(&self, game: &Game<T>) {

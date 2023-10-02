@@ -53,27 +53,6 @@ pub struct Slide {
     slide_state: Arc<Atomic<SlideState>>,
 }
 
-impl Slide {
-    pub fn _new(
-        title: String,
-        media: Option<Media>,
-        introduce_question: Duration,
-        time_limit: Duration,
-        points_awarded: u64,
-        answers: Vec<Answer>,
-    ) -> Self {
-        Self {
-            title,
-            media,
-            introduce_question,
-            time_limit,
-            points_awarded,
-            answers,
-            ..Default::default()
-        }
-    }
-}
-
 #[serde_with::serde_as]
 #[derive(Debug, Serialize, Clone)]
 pub enum OutcomingMessage {

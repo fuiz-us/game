@@ -7,11 +7,12 @@ use crate::game_manager::{
 };
 use actix_cors::Cors;
 use actix_web::{
-    cookie::CookieBuilder, get, post, web, App, HttpRequest, HttpResponse, HttpServer, Responder,
+    cookie::{Cookie, CookieBuilder},
+    get, post, web, App, HttpRequest, HttpResponse, HttpServer, Responder,
 };
 use futures_util::StreamExt;
 use game_manager::{session::Session, GameManager};
-use std::{str::FromStr, time::Duration};
+use std::str::FromStr;
 
 extern crate pretty_env_logger;
 #[macro_use]
@@ -19,6 +20,26 @@ extern crate log;
 
 struct AppState {
     game_manager: GameManager<Session>,
+}
+
+#[cfg(debug_assertions)]
+fn configure_cookie(cookie: CookieBuilder) -> Cookie {
+    cookie
+        .same_site(actix_web::cookie::SameSite::Lax)
+        .secure(false)
+        .path("/")
+        .http_only(true)
+        .finish()
+}
+
+#[cfg(not(debug_assertions))]
+fn configure_cookie(cookie: CookieBuilder) -> Cookie {
+    cookie
+        .same_site(actix_web::cookie::SameSite::None)
+        .secure(true)
+        .path("/")
+        .http_only(true)
+        .finish()
 }
 
 #[get("/dump")]
@@ -59,12 +80,7 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
     //     }
     // });
 
-    let cookie = CookieBuilder::new("wid", host_id.to_string())
-        .same_site(actix_web::cookie::SameSite::None)
-        .secure(true)
-        .path("/")
-        .http_only(true)
-        .finish();
+    let cookie = configure_cookie(CookieBuilder::new("wid", host_id.to_string()));
 
     Ok(HttpResponse::Accepted().cookie(cookie).body(game_id.id))
 }
@@ -132,18 +148,12 @@ async fn watch(
         _ => {
             let watcher_id = WatcherId::default();
 
-            response.add_cookie(
-                &CookieBuilder::new("wid", watcher_id.to_string())
-                    .same_site(actix_web::cookie::SameSite::None)
-                    .secure(true)
-                    .http_only(true)
-                    .path("/")
-                    .finish(),
-            )?;
+            response.add_cookie(&configure_cookie(CookieBuilder::new(
+                "wid",
+                watcher_id.to_string(),
+            )))?;
 
-            ongoing_game
-                .add_watcher(watcher_id, WatcherValue::Unassigned, own_session)
-                .await?;
+            ongoing_game.add_unassigned(watcher_id, own_session).await;
 
             watcher_id
         }
@@ -199,7 +209,14 @@ async fn main() -> std::io::Result<()> {
             .service(watch)
             .service(start)
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind((
+        if cfg!(debug_assertions) {
+            "0.0.0.0"
+        } else {
+            "127.0.0.1"
+        },
+        8080,
+    ))?
     .run()
     .await
 }
