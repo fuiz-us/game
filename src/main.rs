@@ -116,6 +116,10 @@ async fn watch(
         return Err(actix_web::error::ErrorNotFound("GameId not found"));
     };
 
+    if ongoing_game.state().is_done() {
+        return Err(actix_web::error::ErrorNotFound("GameId not found"));
+    }
+
     let own_session = game_manager::session::Session::new(session.clone());
 
     let watcher_id = match req.cookie("wid").map(|x| WatcherId::from_str(x.value())) {
