@@ -43,7 +43,7 @@ pub struct Slide {
     #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
     time_limit: Duration,
     points_awarded: u64,
-    answers: Vec<Answer>,
+    answers: Vec<AnswerChoice>,
 
     #[serde(skip)]
     user_answers: DashMap<WatcherId, (usize, Instant)>,
@@ -55,7 +55,7 @@ pub struct Slide {
 
 #[serde_with::serde_as]
 #[derive(Debug, Serialize, Clone)]
-pub enum OutcomingMessage {
+pub enum OutgoingMessage {
     QuestionAnnouncment {
         index: usize,
         count: usize,
@@ -71,14 +71,14 @@ pub enum OutcomingMessage {
     },
     AnswersCount(usize),
     AnswersResults {
-        results: Vec<AnswerResult>,
+        results: Vec<AnswerChoiceResult>,
     },
     Leaderboard {
         points: Vec<(String, u64)>,
     },
 }
 
-impl game::OutcomingMessage for OutcomingMessage {
+impl game::OutgoingMessage for OutgoingMessage {
     fn identifier(&self) -> &'static str {
         "MultipleChoice"
     }
@@ -111,7 +111,7 @@ pub enum StateMessage {
         question: String,
         media: Option<Media>,
         answers: Vec<TextOrMedia>,
-        results: Vec<AnswerResult>,
+        results: Vec<AnswerChoiceResult>,
     },
     Leaderboard {
         index: usize,
@@ -127,13 +127,13 @@ impl game::StateMessage for StateMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Answer {
+pub struct AnswerChoice {
     pub correct: bool,
     pub content: TextOrMedia,
 }
 
 #[derive(Debug, Serialize, Clone)]
-pub struct AnswerResult {
+pub struct AnswerChoiceResult {
     correct: bool,
     count: usize,
 }
@@ -182,7 +182,7 @@ impl Slide {
         if self.change_state(SlideState::Unstarted, SlideState::Question) {
             self.start_timer();
 
-            game.announce(OutcomingMessage::QuestionAnnouncment {
+            game.announce(OutgoingMessage::QuestionAnnouncment {
                 index,
                 count,
                 question: self.title.clone(),
@@ -201,7 +201,7 @@ impl Slide {
         if self.change_state(SlideState::Question, SlideState::Answers) {
             self.start_timer();
 
-            game.announce(OutcomingMessage::AnswersAnnouncement {
+            game.announce(OutgoingMessage::AnswersAnnouncement {
                 duration: self.time_limit,
                 answers: self
                     .answers
@@ -230,12 +230,12 @@ impl Slide {
     async fn send_answers_results<T: Tunnel>(&self, game: &Game<T>) {
         if self.change_state(SlideState::Answers, SlideState::AnswersResults) {
             let answer_count = self.user_answers.iter().map(|ua| ua.value().0).counts();
-            game.announce(OutcomingMessage::AnswersResults {
+            game.announce(OutgoingMessage::AnswersResults {
                 results: self
                     .answers
                     .iter()
                     .enumerate()
-                    .map(|(i, a)| AnswerResult {
+                    .map(|(i, a)| AnswerChoiceResult {
                         correct: a.correct,
                         count: *answer_count.get(&i).unwrap_or(&0),
                     })
@@ -249,7 +249,7 @@ impl Slide {
         if self.change_state(SlideState::AnswersResults, SlideState::Leaderboard) {
             self.add_scores(game);
 
-            game.announce(OutcomingMessage::Leaderboard {
+            game.announce(OutgoingMessage::Leaderboard {
                 points: game.leaderboard(),
             })
             .await;
@@ -306,7 +306,7 @@ impl Slide {
                 answered_count: {
                     let left_set: HashSet<_> = game
                         .watchers
-                        .specific_iter(WatcherValueKind::Player)
+                        .specific_vec(WatcherValueKind::Player)
                         .iter()
                         .map(|(w, _, _)| w.to_owned())
                         .collect();
@@ -331,7 +331,7 @@ impl Slide {
                         .answers
                         .iter()
                         .enumerate()
-                        .map(|(i, a)| AnswerResult {
+                        .map(|(i, a)| AnswerChoiceResult {
                             correct: a.correct,
                             count: *answer_count.get(&i).unwrap_or(&0),
                         })
@@ -373,7 +373,7 @@ impl Slide {
                 self.user_answers.insert(watcher_id, (v, Instant::now()));
                 let left_set: HashSet<_> = game
                     .watchers
-                    .specific_iter(WatcherValueKind::Player)
+                    .specific_vec(WatcherValueKind::Player)
                     .iter()
                     .map(|(w, _, _)| w.to_owned())
                     .collect();
@@ -385,7 +385,7 @@ impl Slide {
                 if left_set.is_subset(&right_set) {
                     self.send_answers_results(game).await;
                 } else {
-                    game.announce_host(OutcomingMessage::AnswersCount(
+                    game.announce_host(OutgoingMessage::AnswersCount(
                         left_set.intersection(&right_set).count(),
                     ))
                     .await;

@@ -52,7 +52,7 @@ impl<T: Tunnel> Debug for Game<T> {
     }
 }
 
-pub trait OutcomingMessage: Serialize + Clone {
+pub trait OutgoingMessage: Serialize + Clone {
     fn identifier(&self) -> &'static str;
 
     fn to_message(&self) -> Result<String, serde_json::Error> {
@@ -108,7 +108,7 @@ pub enum IncomingHostMessage {
 }
 
 #[derive(Debug, Serialize, Clone)]
-pub enum GameOutcomingMessage {
+pub enum GameOutgoingMessage {
     WaitingScreen(WaitingScreenMessage),
     NameChoose,
     NameAssign(String),
@@ -122,7 +122,7 @@ pub struct WaitingScreenMessage {
     truncated: bool,
 }
 
-impl OutcomingMessage for GameOutcomingMessage {
+impl OutgoingMessage for GameOutgoingMessage {
     fn identifier(&self) -> &'static str {
         "Game"
     }
@@ -205,14 +205,14 @@ impl<T: Tunnel> Game<T> {
             .collect_vec()
     }
 
-    pub async fn announce<O: OutcomingMessage>(&self, message: O) {
+    pub async fn announce<O: OutgoingMessage>(&self, message: O) {
         let serialized_message = message
             .to_message()
             .expect("default enum serializer failed");
 
         let mut watchers_to_be_removed = Vec::new();
 
-        for (watcher, session, _) in self.watchers.iter() {
+        for (watcher, session, _) in self.watchers.vec() {
             if session.send(&serialized_message).await.is_err() {
                 watchers_to_be_removed.push(watcher);
             }
@@ -223,14 +223,14 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    pub async fn announce_host<O: OutcomingMessage>(&self, message: O) {
+    pub async fn announce_host<O: OutgoingMessage>(&self, message: O) {
         let serialized_message = message
             .to_message()
             .expect("default enum serializer failed");
 
         let mut watchers_to_be_removed = Vec::new();
 
-        for (watcher, session, _) in self.watchers.specific_iter(WatcherValueKind::Host) {
+        for (watcher, session, _) in self.watchers.specific_vec(WatcherValueKind::Host) {
             if session.send(&serialized_message).await.is_err() {
                 watchers_to_be_removed.push(watcher);
             }
@@ -241,7 +241,7 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    pub async fn send<O: OutcomingMessage>(&self, message: O, watcher_id: WatcherId) {
+    pub async fn send<O: OutgoingMessage>(&self, message: O, watcher_id: WatcherId) {
         let serialized_message = message
             .to_message()
             .expect("default enum serializer failed");
@@ -251,7 +251,7 @@ impl<T: Tunnel> Game<T> {
 
     pub async fn mark_as_done(&self) {
         self.change_state(GameState::FinalLeaderboard);
-        let watchers = self.watchers.iter().iter().map(|(x, _, _)| *x).collect_vec();
+        let watchers = self.watchers.vec().iter().map(|(x, _, _)| *x).collect_vec();
         for watcher in watchers {
             self.remove_watcher_session(watcher).await;
         }
@@ -276,19 +276,19 @@ impl<T: Tunnel> Game<T> {
                             watcher_id,
                             WatcherValue::Player(resulting_name.clone()),
                         );
-                        self.send(GameOutcomingMessage::NameAssign(resulting_name), watcher_id)
+                        self.send(GameOutgoingMessage::NameAssign(resulting_name), watcher_id)
                             .await;
 
                         self.announce_waiting().await;
 
                         self.send(
-                            GameOutcomingMessage::WaitingScreen(self.get_waiting_message()),
+                            GameOutgoingMessage::WaitingScreen(self.get_waiting_message()),
                             watcher_id,
                         )
                         .await;
                     }
                     Err(e) => {
-                        self.send(GameOutcomingMessage::NameError(e), watcher_id)
+                        self.send(GameOutgoingMessage::NameError(e), watcher_id)
                             .await;
                     }
                 }
@@ -315,7 +315,7 @@ impl<T: Tunnel> Game<T> {
 
     fn get_names(&self) -> Vec<String> {
         self.watchers
-            .specific_iter(WatcherValueKind::Player)
+            .specific_vec(WatcherValueKind::Player)
             .into_iter()
             .filter_map(|(_, _, x)| match x {
                 WatcherValue::Player(s) => Some(s.to_owned()),
@@ -326,7 +326,7 @@ impl<T: Tunnel> Game<T> {
 
     fn get_names_limited(&self, limit: usize) -> Vec<String> {
         self.watchers
-            .specific_iter(WatcherValueKind::Player)
+            .specific_vec(WatcherValueKind::Player)
             .into_iter()
             .take(limit)
             .filter_map(|(_, _, x)| match x {
@@ -375,7 +375,7 @@ impl<T: Tunnel> Game<T> {
 
     pub async fn announce_waiting(&self) {
         if let GameState::WaitingScreen = self.state() {
-            self.announce_host(GameOutcomingMessage::WaitingScreen(
+            self.announce_host(GameOutgoingMessage::WaitingScreen(
                 self.get_waiting_message(),
             ))
             .await;
@@ -386,7 +386,7 @@ impl<T: Tunnel> Game<T> {
         self.watchers
             .add_watcher(watcher, WatcherValue::Unassigned, session);
 
-        self.send(GameOutcomingMessage::NameChoose, watcher).await;
+        self.send(GameOutgoingMessage::NameChoose, watcher).await;
     }
 
     pub fn reserve_watcher(
@@ -408,7 +408,7 @@ impl<T: Tunnel> Game<T> {
             Some(WatcherValue::Player(name)) => {
                 session
                     .send(
-                        &GameOutcomingMessage::NameAssign(name)
+                        &GameOutgoingMessage::NameAssign(name)
                             .to_message()
                             .expect("Serializer should never fail"),
                     )
@@ -417,7 +417,7 @@ impl<T: Tunnel> Game<T> {
             Some(WatcherValue::Unassigned) => {
                 session
                     .send(
-                        &GameOutcomingMessage::NameChoose
+                        &GameOutgoingMessage::NameChoose
                             .to_message()
                             .expect("Serializer should never fail"),
                     )

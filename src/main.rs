@@ -8,7 +8,9 @@ use crate::game_manager::{
 use actix_cors::Cors;
 use actix_web::{
     cookie::{Cookie, CookieBuilder},
-    get, post, web, App, HttpRequest, HttpResponse, HttpServer, Responder,
+    get,
+    middleware::Logger,
+    post, web, App, HttpRequest, HttpResponse, HttpServer, Responder,
 };
 use futures_util::StreamExt;
 use game_manager::{session::Session, GameManager};
@@ -163,6 +165,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         let cors = Cors::permissive();
         App::new()
+            .wrap(Logger::default())
             .wrap(cors)
             .app_data(app_state.clone())
             .route("/hello", web::get().to(|| async { "Hello World!" }))

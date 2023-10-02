@@ -48,7 +48,7 @@ pub struct Watchers<T: Tunnel> {
 }
 
 impl<T: Tunnel> Watchers<T> {
-    pub fn iter(
+    pub fn vec(
         &self,
     ) -> Vec<(
         WatcherId,
@@ -65,7 +65,7 @@ impl<T: Tunnel> Watchers<T> {
             .collect_vec()
     }
 
-    pub fn specific_iter(
+    pub fn specific_vec(
         &self,
         filter: WatcherValueKind,
     ) -> Vec<(
