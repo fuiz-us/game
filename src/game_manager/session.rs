@@ -14,6 +14,8 @@ pub struct Session {
 #[async_trait]
 pub trait Tunnel {
     async fn send(&self, message: &str) -> Result<(), Closed>;
+
+    async fn close(&self);
 }
 
 impl Session {
@@ -36,6 +38,17 @@ impl Tunnel for Session {
         match session {
             Ok(mut session) => session.text(message).await,
             Err(c) => Err(c),
+        }
+    }
+
+    async fn close(&self) {
+        let session = match self.session.lock() {
+            Ok(s) => Ok(s.clone()),
+            Err(_) => Err(Closed),
+        };
+
+        if let Ok(session) = session {
+            let _ = session.close(None).await;
         }
     }
 }

@@ -67,7 +67,7 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
                 game_manager::game::GameState::FinalLeaderboard
             ) || ongoing_game.updated().elapsed() > std::time::Duration::from_secs(280)
             {
-                ongoing_game.change_state(game_manager::game::GameState::FinalLeaderboard);
+                ongoing_game.mark_as_done().await;
                 data.game_manager.remove_game(&checked_game_id);
                 break;
             }
@@ -144,7 +144,7 @@ async fn watch(
             }
         }
 
-        ongoing_game.remove_watcher_session(watcher_id);
+        ongoing_game.remove_watcher_session(watcher_id).await;
         ongoing_game.announce_waiting().await;
         session.close(None).await.ok();
     });

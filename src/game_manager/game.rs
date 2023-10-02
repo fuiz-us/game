@@ -219,7 +219,7 @@ impl<T: Tunnel> Game<T> {
         }
 
         for watcher in watchers_to_be_removed {
-            self.remove_watcher_session(watcher);
+            self.remove_watcher_session(watcher).await;
         }
     }
 
@@ -237,7 +237,7 @@ impl<T: Tunnel> Game<T> {
         }
 
         for watcher in watchers_to_be_removed {
-            self.remove_watcher_session(watcher);
+            self.remove_watcher_session(watcher).await;
         }
     }
 
@@ -249,8 +249,12 @@ impl<T: Tunnel> Game<T> {
         self.watchers.send(&serialized_message, watcher_id).await;
     }
 
-    pub fn mark_as_done(&self) {
+    pub async fn mark_as_done(&self) {
         self.change_state(GameState::FinalLeaderboard);
+        let watchers = self.watchers.iter().iter().map(|(x, _, _)| *x).collect_vec();
+        for watcher in watchers {
+            self.remove_watcher_session(watcher).await;
+        }
     }
 
     pub async fn receive_message(&self, watcher_id: WatcherId, message: IncomingMessage) {
@@ -302,7 +306,7 @@ impl<T: Tunnel> Game<T> {
                 }
                 GameState::FinalLeaderboard => {
                     if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
-                        self.mark_as_done();
+                        self.mark_as_done().await;
                     }
                 }
             },
@@ -442,8 +446,8 @@ impl<T: Tunnel> Game<T> {
         self.watchers.has_watcher(watcher_id)
     }
 
-    pub fn remove_watcher_session(&self, watcher: WatcherId) {
-        self.watchers.remove_watcher_session(&watcher);
+    pub async fn remove_watcher_session(&self, watcher: WatcherId) {
+        self.watchers.remove_watcher_session(&watcher).await;
     }
 }
 
