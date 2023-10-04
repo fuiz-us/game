@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-use crate::game_manager::{game::StateMessage, session::Tunnel, watcher::WatcherId};
+use crate::game_manager::{
+    game::StateMessage,
+    session::Tunnel,
+    watcher::{WatcherId, WatcherValueKind},
+};
 
 use super::{
     super::game::{Game, GameState, IncomingMessage},
-    multiple_choice,
+    bingo, multiple_choice,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -16,6 +20,7 @@ pub struct FuizConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum Slide {
     MultipleChoice(multiple_choice::Slide),
+    Bingo(bingo::Slide),
 }
 
 impl FuizConfig {
@@ -53,11 +58,13 @@ impl FuizConfig {
 
     pub fn state_message<T: Tunnel>(
         &self,
+        watcher_id: WatcherId,
+        watcher_kind: WatcherValueKind,
         game: &Game<T>,
         index: usize,
     ) -> Option<Box<dyn StateMessage>> {
         if let Some(slide) = self.slides.get(index) {
-            Some(slide.state_message(game, index, self.slides.len()))
+            Some(slide.state_message(watcher_id, watcher_kind, game, index, self.slides.len()))
         } else {
             None
         }
@@ -74,6 +81,9 @@ impl Slide {
     ) {
         match self {
             Self::MultipleChoice(s) => {
+                s.play(game, fuiz, index, count).await;
+            }
+            Self::Bingo(s) => {
                 s.play(game, fuiz, index, count).await;
             }
         }
@@ -93,17 +103,26 @@ impl Slide {
                 s.receive_message(game, fuiz, watcher_id, message, index, count)
                     .await;
             }
+            Self::Bingo(s) => {
+                s.receive_message(game, fuiz, watcher_id, message, index, count)
+                    .await;
+            }
         }
     }
 
     pub fn state_message<T: Tunnel>(
         &self,
+        watcher_id: WatcherId,
+        watcher_kind: WatcherValueKind,
         game: &Game<T>,
         index: usize,
         count: usize,
     ) -> Box<dyn StateMessage> {
         match self {
             Self::MultipleChoice(s) => Box::new(s.state_message(game, index, count)),
+            Self::Bingo(s) => {
+                Box::new(s.state_message(watcher_id, watcher_kind, game, index, count))
+            }
         }
     }
 }

@@ -12,6 +12,12 @@ use super::session::Tunnel;
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WatcherId(Uuid);
 
+impl WatcherId {
+    pub fn get_seed(&self) -> u64 {
+        self.0.as_u64_pair().0
+    }
+}
+
 impl Default for WatcherId {
     fn default() -> Self {
         Self(Uuid::new_v4())

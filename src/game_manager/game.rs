@@ -105,6 +105,7 @@ pub enum IncomingUnassignedMessage {
 #[derive(Debug, Deserialize, Clone, Copy)]
 pub enum IncomingHostMessage {
     Next,
+    Index(usize),
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -223,6 +224,42 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
+    pub fn get_name(&self, watcher_id: WatcherId) -> Option<String> {
+        self.watchers
+            .get_watcher_value(watcher_id)
+            .map(|v| match v {
+                WatcherValue::Player(x) => Some(x),
+                _ => None,
+            })
+            .flatten()
+    }
+
+    pub async fn announce_with<O, F>(&self, sender: F)
+    where
+        O: OutgoingMessage,
+        F: Fn(WatcherId, WatcherValueKind) -> Option<O>,
+    {
+        let mut watchers_to_be_removed = Vec::new();
+
+        for (watcher, session, v) in self.watchers.vec() {
+            let Some(message) = sender(watcher, v.kind()) else {
+                continue;
+            };
+
+            let Ok(serialized_message) = message.to_message() else {
+                continue;
+            };
+
+            if session.send(&serialized_message).await.is_err() {
+                watchers_to_be_removed.push(watcher);
+            }
+        }
+
+        for watcher in watchers_to_be_removed {
+            self.remove_watcher_session(watcher).await;
+        }
+    }
+
     pub async fn announce_host<O: OutgoingMessage>(&self, message: O) {
         let serialized_message = message
             .to_message()
@@ -239,6 +276,14 @@ impl<T: Tunnel> Game<T> {
         for watcher in watchers_to_be_removed {
             self.remove_watcher_session(watcher).await;
         }
+    }
+
+    pub fn players(&self) -> Vec<WatcherId> {
+        self.watchers
+            .specific_vec(WatcherValueKind::Player)
+            .into_iter()
+            .map(|(x, _, _)| x)
+            .collect_vec()
     }
 
     pub async fn send<O: OutgoingMessage>(&self, message: O, watcher_id: WatcherId) {
@@ -336,14 +381,18 @@ impl<T: Tunnel> Game<T> {
             .collect_vec()
     }
 
-    pub fn state_message(&self) -> Box<dyn StateMessage> {
+    pub fn state_message(
+        &self,
+        watcher_id: WatcherId,
+        watcher_kind: WatcherValueKind,
+    ) -> Box<dyn StateMessage> {
         match self.state() {
             GameState::WaitingScreen => {
                 Box::new(GameStateMessage::WaitingScreen(self.get_waiting_message()))
             }
             GameState::Slide(i) => self
                 .fuiz_config
-                .state_message(self, i)
+                .state_message(watcher_id, watcher_kind, self, i)
                 .expect("Index was violated"),
             GameState::FinalLeaderboard => {
                 Box::new(GameStateMessage::Leaderboard(self.leaderboard()))
@@ -404,8 +453,12 @@ impl<T: Tunnel> Game<T> {
     }
 
     pub async fn update_session(&self, watcher_id: WatcherId, session: T) -> Result<(), Closed> {
-        match self.watchers.get_watcher_value(watcher_id) {
-            Some(WatcherValue::Player(name)) => {
+        let Some(watcher_value) = self.watchers.get_watcher_value(watcher_id) else {
+            return Ok(());
+        };
+
+        match watcher_value.clone() {
+            WatcherValue::Player(name) => {
                 session
                     .send(
                         &GameOutgoingMessage::NameAssign(name)
@@ -414,7 +467,7 @@ impl<T: Tunnel> Game<T> {
                     )
                     .await?;
             }
-            Some(WatcherValue::Unassigned) => {
+            WatcherValue::Unassigned => {
                 session
                     .send(
                         &GameOutgoingMessage::NameChoose
@@ -429,7 +482,7 @@ impl<T: Tunnel> Game<T> {
         session
             .send(
                 &self
-                    .state_message()
+                    .state_message(watcher_id, watcher_value.kind())
                     .to_message()
                     .expect("default serializer shouldn't fail"),
             )
