@@ -5,7 +5,6 @@ use crate::game_manager::{
     game_id::GameId,
     watcher::{WatcherId, WatcherValue},
 };
-use actix_cors::Cors;
 use actix_web::{
     cookie::{Cookie, CookieBuilder},
     get,
@@ -216,15 +215,23 @@ async fn main() -> std::io::Result<()> {
     });
 
     HttpServer::new(move || {
-        let cors = Cors::permissive();
-        App::new()
+        let app = App::new()
             .wrap(Logger::default())
-            .wrap(cors)
             .app_data(app_state.clone())
             .route("/hello", web::get().to(|| async { "Hello World!" }))
             .service(alive)
             .service(add)
-            .service(watch)
+            .service(watch);
+
+        #[cfg(debug_assertions)]
+        {
+            let cors = actix_cors::Cors::permissive();
+            app.wrap(cors)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            app
+        }
     })
     .bind((
         if cfg!(debug_assertions) {
