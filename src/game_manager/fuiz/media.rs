@@ -7,13 +7,7 @@ pub enum Media {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum Image {
-    Internet(InternetImage),
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct InternetImage {
-    pub url: String,
-    pub alt: String,
+    Corkboard { id: String, alt: String },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
