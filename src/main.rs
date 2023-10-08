@@ -84,7 +84,7 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
 
     let cookie = configure_cookie(CookieBuilder::new("wid", host_id.to_string()));
 
-    Ok(HttpResponse::Accepted().cookie(cookie).body(game_id.id))
+    Ok(HttpResponse::Ok().cookie(cookie).body(game_id.id))
 }
 
 #[get("/alive/{game_id}")]
