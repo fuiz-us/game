@@ -114,8 +114,8 @@ pub enum GameOutgoingMessage {
     NameChoose,
     NameAssign(String),
     NameError(NamesError),
-    Leaderboard(LeaderboardMessage),
-    Score(Option<ScoreMessage>),
+    Leaderboard { leaderboard: LeaderboardMessage },
+    Score { score: Option<ScoreMessage> },
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -250,9 +250,13 @@ impl<T: Tunnel> Game<T> {
         self.announce_with(|watcher_id, watcher_kind| {
             Some(match watcher_kind {
                 WatcherValueKind::Host | WatcherValueKind::Unassigned => {
-                    GameOutgoingMessage::Leaderboard(leaderboard_message.clone())
+                    GameOutgoingMessage::Leaderboard {
+                        leaderboard: leaderboard_message.clone(),
+                    }
                 }
-                WatcherValueKind::Player => GameOutgoingMessage::Score(self.score(watcher_id)),
+                WatcherValueKind::Player => GameOutgoingMessage::Score {
+                    score: self.score(watcher_id),
+                },
             })
         })
         .await;
