@@ -70,10 +70,8 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
             let Some(ongoing_game) = stale_data.game_manager.get_game(&stale_game_id) else {
                 break;
             };
-            if matches!(
-                ongoing_game.state(),
-                game_manager::game::GameState::FinalLeaderboard
-            ) || ongoing_game.updated().elapsed() > std::time::Duration::from_secs(280)
+            if matches!(ongoing_game.state(), game_manager::game::GameState::Done)
+                || ongoing_game.updated().elapsed() > std::time::Duration::from_secs(280)
             {
                 ongoing_game.mark_as_done().await;
                 stale_data.game_manager.remove_game(&stale_game_id);

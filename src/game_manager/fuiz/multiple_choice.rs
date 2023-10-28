@@ -30,7 +30,6 @@ enum SlideState {
     Question,
     Answers,
     AnswersResults,
-    Leaderboard,
 }
 
 #[serde_with::serde_as]
@@ -73,9 +72,6 @@ pub enum OutgoingMessage {
     AnswersResults {
         results: Vec<AnswerChoiceResult>,
     },
-    Leaderboard {
-        points: Vec<(String, u64)>,
-    },
 }
 
 impl game::OutgoingMessage for OutgoingMessage {
@@ -112,11 +108,6 @@ pub enum StateMessage {
         media: Option<Media>,
         answers: Vec<TextOrMedia>,
         results: Vec<AnswerChoiceResult>,
-    },
-    Leaderboard {
-        index: usize,
-        count: usize,
-        points: Vec<(String, u64)>,
     },
 }
 
@@ -245,17 +236,6 @@ impl Slide {
         }
     }
 
-    async fn send_leaderboard<T: Tunnel>(&self, game: &Game<T>) {
-        if self.change_state(SlideState::AnswersResults, SlideState::Leaderboard) {
-            self.add_scores(game);
-
-            game.announce(OutgoingMessage::Leaderboard {
-                points: game.leaderboard(),
-            })
-            .await;
-        }
-    }
-
     fn add_scores<T: Tunnel>(&self, game: &Game<T>) {
         let starting_instant = self.timer();
 
@@ -279,6 +259,8 @@ impl Slide {
 
     pub fn state_message<T: Tunnel>(
         &self,
+        _watcher_id: WatcherId,
+        _watcher_kind: WatcherValueKind,
         game: &Game<T>,
         index: usize,
         count: usize,
@@ -338,18 +320,13 @@ impl Slide {
                         .collect_vec(),
                 }
             }
-            SlideState::Leaderboard => StateMessage::Leaderboard {
-                index,
-                count,
-                points: game.leaderboard(),
-            },
         }
     }
 
     pub async fn receive_message<T: Tunnel>(
         &self,
         game: &Game<T>,
-        fuiz: &FuizConfig,
+        _fuiz: &FuizConfig,
         watcher_id: WatcherId,
         message: IncomingMessage,
         index: usize,
@@ -363,8 +340,10 @@ impl Slide {
                     }
                     SlideState::Question => self.send_answers_announcements(game).await,
                     SlideState::Answers => self.send_answers_results(game).await,
-                    SlideState::AnswersResults => self.send_leaderboard(game).await,
-                    SlideState::Leaderboard => fuiz.play_slide(game, index + 1).await,
+                    SlideState::AnswersResults => {
+                        self.add_scores(game);
+                        game.finish_slide().await;
+                    }
                 }
             }
             IncomingMessage::Player(IncomingPlayerMessage::IndexAnswer(v))

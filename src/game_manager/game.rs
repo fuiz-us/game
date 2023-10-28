@@ -14,7 +14,7 @@ use crate::game_manager::watcher::WatcherValue;
 use super::{
     fuiz::config::FuizConfig,
     game_id::GameId,
-    leaderboard::Leaderboard,
+    leaderboard::{Leaderboard, LeaderboardMessage, ScoreMessage},
     names::{Names, NamesError},
     session::Tunnel,
     watcher::{WatcherId, WatcherValueKind, Watchers},
@@ -23,13 +23,13 @@ use super::{
 #[derive(Debug, Clone, Copy)]
 pub enum GameState {
     WaitingScreen,
-    Slide(usize),
-    FinalLeaderboard,
+    Slide { index: usize, finished: bool },
+    Done,
 }
 
 impl GameState {
     pub fn is_done(&self) -> bool {
-        matches!(self, GameState::FinalLeaderboard)
+        matches!(self, GameState::Done)
     }
 }
 
@@ -114,6 +114,8 @@ pub enum GameOutgoingMessage {
     NameChoose,
     NameAssign(String),
     NameError(NamesError),
+    Leaderboard(LeaderboardMessage),
+    Score(Option<ScoreMessage>),
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -132,7 +134,16 @@ impl OutgoingMessage for GameOutgoingMessage {
 #[derive(Debug, Serialize, Clone)]
 pub enum GameStateMessage {
     WaitingScreen(WaitingScreenMessage),
-    Leaderboard(Vec<(String, u64)>),
+    Leaderboard {
+        index: usize,
+        count: usize,
+        leaderboard: LeaderboardMessage,
+    },
+    Score {
+        index: usize,
+        count: usize,
+        score: Option<ScoreMessage>,
+    },
 }
 
 impl StateMessage for GameStateMessage {
@@ -166,7 +177,26 @@ impl<T: Tunnel> Game<T> {
 
     pub async fn play(&self) {
         info!("PLAYING {}", self.game_id.id);
-        self.fuiz_config.play(self).await;
+        self.change_state(GameState::Slide {
+            index: 0,
+            finished: false,
+        });
+        self.fuiz_config.play_slide(self, 0).await;
+    }
+
+    pub async fn finish_slide(&self) {
+        if let GameState::Slide {
+            index,
+            finished: false,
+        } = self.state()
+        {
+            self.change_state(GameState::Slide {
+                index,
+                finished: true,
+            });
+
+            self.announce_leaderboard().await;
+        }
     }
 
     pub fn change_state(&self, game_state: GameState) {
@@ -180,7 +210,7 @@ impl<T: Tunnel> Game<T> {
         if let Ok(state) = self.state.lock() {
             *state
         } else {
-            GameState::FinalLeaderboard
+            GameState::Done
         }
     }
 
@@ -198,12 +228,34 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    pub fn leaderboard(&self) -> Vec<(String, u64)> {
-        self.leaderboard
-            .get_scores_descending()
-            .into_iter()
-            .map(|(i, s)| (self.names.get_name(&i).unwrap_or("Unknown".to_owned()), s))
-            .collect_vec()
+    pub fn leaderboard_message(&self) -> LeaderboardMessage {
+        let (exact_count, points) = self.leaderboard.get_scores_descending_truncated();
+
+        LeaderboardMessage {
+            exact_count,
+            points: points
+                .into_iter()
+                .map(|(i, s)| (self.names.get_name(&i).unwrap_or("Unknown".to_owned()), s))
+                .collect_vec(),
+        }
+    }
+
+    pub fn score(&self, watcher_id: WatcherId) -> Option<ScoreMessage> {
+        self.leaderboard.score(watcher_id)
+    }
+
+    pub async fn announce_leaderboard(&self) {
+        let leaderboard_message = self.leaderboard_message();
+
+        self.announce_with(|watcher_id, watcher_kind| {
+            Some(match watcher_kind {
+                WatcherValueKind::Host | WatcherValueKind::Unassigned => {
+                    GameOutgoingMessage::Leaderboard(leaderboard_message.clone())
+                }
+                WatcherValueKind::Player => GameOutgoingMessage::Score(self.score(watcher_id)),
+            })
+        })
+        .await;
     }
 
     pub async fn announce<O: OutgoingMessage>(&self, message: O) {
@@ -227,11 +279,10 @@ impl<T: Tunnel> Game<T> {
     pub fn get_name(&self, watcher_id: WatcherId) -> Option<String> {
         self.watchers
             .get_watcher_value(watcher_id)
-            .map(|v| match v {
+            .and_then(|v| match v {
                 WatcherValue::Player(x) => Some(x),
                 _ => None,
             })
-            .flatten()
     }
 
     pub async fn announce_with<O, F>(&self, sender: F)
@@ -295,7 +346,7 @@ impl<T: Tunnel> Game<T> {
     }
 
     pub async fn mark_as_done(&self) {
-        self.change_state(GameState::FinalLeaderboard);
+        self.change_state(GameState::Done);
         let watchers = self.watchers.vec().iter().map(|(x, _, _)| *x).collect_vec();
         for watcher in watchers {
             self.remove_watcher_session(watcher).await;
@@ -344,12 +395,27 @@ impl<T: Tunnel> Game<T> {
                         self.play().await;
                     }
                 }
-                GameState::Slide(i) => {
-                    self.fuiz_config
-                        .receive_message(self, watcher_id, message, i)
-                        .await;
-                }
-                GameState::FinalLeaderboard => {
+                GameState::Slide { index, finished } => match finished {
+                    false => {
+                        self.fuiz_config
+                            .receive_message(self, watcher_id, message, index)
+                            .await
+                    }
+                    true => {
+                        if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
+                            if index + 1 >= self.fuiz_config.len() {
+                                self.change_state(GameState::Done)
+                            } else {
+                                self.change_state(GameState::Slide {
+                                    index: index + 1,
+                                    finished: false,
+                                });
+                                self.fuiz_config.play_slide(self, index + 1).await;
+                            }
+                        }
+                    }
+                },
+                GameState::Done => {
                     if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
                         self.mark_as_done().await;
                     }
@@ -390,13 +456,40 @@ impl<T: Tunnel> Game<T> {
             GameState::WaitingScreen => {
                 Box::new(GameStateMessage::WaitingScreen(self.get_waiting_message()))
             }
-            GameState::Slide(i) => self
-                .fuiz_config
-                .state_message(watcher_id, watcher_kind, self, i)
-                .expect("Index was violated"),
-            GameState::FinalLeaderboard => {
-                Box::new(GameStateMessage::Leaderboard(self.leaderboard()))
-            }
+            GameState::Slide { index, finished } => match finished {
+                false => self
+                    .fuiz_config
+                    .state_message(watcher_id, watcher_kind, self, index)
+                    .expect("Index was violated"),
+                true => Box::new(match watcher_kind {
+                    WatcherValueKind::Host | WatcherValueKind::Unassigned => {
+                        GameStateMessage::Leaderboard {
+                            index,
+                            count: self.fuiz_config.len(),
+                            leaderboard: self.leaderboard_message(),
+                        }
+                    }
+                    WatcherValueKind::Player => GameStateMessage::Score {
+                        index,
+                        count: self.fuiz_config.len(),
+                        score: self.score(watcher_id),
+                    },
+                }),
+            },
+            GameState::Done => Box::new(match watcher_kind {
+                WatcherValueKind::Host | WatcherValueKind::Unassigned => {
+                    GameStateMessage::Leaderboard {
+                        index: self.fuiz_config.len() - 1,
+                        count: self.fuiz_config.len(),
+                        leaderboard: self.leaderboard_message(),
+                    }
+                }
+                WatcherValueKind::Player => GameStateMessage::Score {
+                    index: self.fuiz_config.len() - 1,
+                    count: self.fuiz_config.len(),
+                    score: self.score(watcher_id),
+                },
+            }),
         }
     }
 

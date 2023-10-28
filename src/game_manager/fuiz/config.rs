@@ -7,7 +7,7 @@ use crate::game_manager::{
 };
 
 use super::{
-    super::game::{Game, GameState, IncomingMessage},
+    super::game::{Game, IncomingMessage},
     bingo, multiple_choice,
 };
 
@@ -29,16 +29,13 @@ impl FuizConfig {
         Self { title, slides }
     }
 
-    pub async fn play<T: Tunnel>(&self, game: &Game<T>) {
-        self.play_slide(game, 0).await;
+    pub fn len(&self) -> usize {
+        self.slides.len()
     }
 
     pub async fn play_slide<T: Tunnel>(&self, game: &Game<T>, i: usize) {
         if let Some(slide) = self.slides.get(i) {
-            game.change_state(GameState::Slide(i));
             slide.play(game, self, i, self.slides.len()).await;
-        } else {
-            game.change_state(GameState::FinalLeaderboard);
         }
     }
 
@@ -119,7 +116,9 @@ impl Slide {
         count: usize,
     ) -> Box<dyn StateMessage> {
         match self {
-            Self::MultipleChoice(s) => Box::new(s.state_message(game, index, count)),
+            Self::MultipleChoice(s) => {
+                Box::new(s.state_message(watcher_id, watcher_kind, game, index, count))
+            }
             Self::Bingo(s) => {
                 Box::new(s.state_message(watcher_id, watcher_kind, game, index, count))
             }
