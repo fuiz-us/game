@@ -229,7 +229,7 @@ impl<T: Tunnel> Game<T> {
     }
 
     pub fn leaderboard_message(&self) -> LeaderboardMessage {
-        let (exact_count, points) = self.leaderboard.get_scores_descending_truncated();
+        let (exact_count, points) = self.leaderboard.get_scores_truncated();
 
         LeaderboardMessage {
             exact_count,
