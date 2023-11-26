@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use atomig::{Atom, Atomic, Ordering};
 use dashmap::{DashMap, DashSet};
+use garde::Validate;
 use itertools::{izip, Itertools};
 use serde::{Deserialize, Serialize};
 
@@ -22,17 +23,26 @@ enum SlideState {
     Winners,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+const MAX_TEXT_LENGTH: usize = crate::CONFIG.fuiz.answer_text.max_length.unsigned_abs() as usize;
+const MAX_ANSWER_COUNT: usize = crate::CONFIG.fuiz.bingo.max_answer_count.unsigned_abs() as usize;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate)]
 pub struct Slide {
+    #[garde(skip)]
     points_awarded: u64,
+    #[garde(length(max = MAX_ANSWER_COUNT), inner(length(max = MAX_TEXT_LENGTH)))]
     answers: Vec<String>,
+    #[garde(range(max = answers.len()))]
     board_size: usize,
 
     #[serde(skip)]
+    #[garde(skip)]
     user_votes: DashMap<usize, DashSet<WatcherId>>,
     #[serde(skip)]
+    #[garde(skip)]
     crossed: DashSet<usize>,
     #[serde(skip)]
+    #[garde(skip)]
     slide_state: Arc<Atomic<SlideState>>,
 }
 

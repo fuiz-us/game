@@ -5,6 +5,8 @@ use derive_where::derive_where;
 use enum_map::{Enum, EnumMap};
 use itertools::Itertools;
 use kinded::Kinded;
+use serde::Serialize;
+use thiserror::Error;
 use uuid::Uuid;
 
 use super::session::Tunnel;
@@ -53,6 +55,16 @@ pub struct Watchers<T: Tunnel> {
     reverse_watchers: EnumMap<WatcherValueKind, DashSet<WatcherId>>,
 }
 
+const MAX_PLAYERS: usize = crate::CONFIG.fuiz.max_player_count.unsigned_abs() as usize;
+
+#[derive(Error, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatcherError {
+    #[error("maximum number of players reached")]
+    MaximumPlayers,
+}
+
+impl actix_web::error::ResponseError for WatcherError {}
+
 impl<T: Tunnel> Watchers<T> {
     pub fn vec(
         &self,
@@ -92,11 +104,26 @@ impl<T: Tunnel> Watchers<T> {
         self.reverse_watchers[filter].len()
     }
 
-    pub fn add_watcher(&self, watcher_id: WatcherId, watcher_value: WatcherValue, session: T) {
+    pub async fn add_watcher(
+        &self,
+        watcher_id: WatcherId,
+        watcher_value: WatcherValue,
+        session: T,
+    ) -> Result<(), WatcherError> {
         let kind = watcher_value.kind();
-        self.sessions.insert(watcher_id, session);
+
+        if self.sessions.len() >= MAX_PLAYERS {
+            return Err(WatcherError::MaximumPlayers);
+        }
+
+        if let Some(x) = self.sessions.insert(watcher_id, session) {
+            x.close().await;
+        }
+
         self.watchers.insert(watcher_id, watcher_value);
         self.reverse_watchers[kind].insert(watcher_id);
+
+        Ok(())
     }
 
     pub fn update_watcher_value(&self, watcher_id: WatcherId, watcher_value: WatcherValue) {

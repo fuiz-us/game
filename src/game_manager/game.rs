@@ -17,7 +17,7 @@ use super::{
     leaderboard::{Leaderboard, LeaderboardMessage, ScoreMessage},
     names::{Names, NamesError},
     session::Tunnel,
-    watcher::{WatcherId, WatcherValueKind, Watchers},
+    watcher::{WatcherError, WatcherId, WatcherValueKind, Watchers},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -528,11 +528,14 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    pub async fn add_unassigned(&self, watcher: WatcherId, session: T) {
+    pub async fn add_unassigned(&self, watcher: WatcherId, session: T) -> Result<(), WatcherError> {
         self.watchers
-            .add_watcher(watcher, WatcherValue::Unassigned, session);
+            .add_watcher(watcher, WatcherValue::Unassigned, session)
+            .await?;
 
         self.send(GameOutgoingMessage::NameChoose, watcher).await;
+
+        Ok(())
     }
 
     pub fn reserve_watcher(
@@ -642,7 +645,6 @@ mod tests {
 
         assert!(game.reserve_watcher(host_id, WatcherValue::Host).is_ok());
         assert!(game.update_session(host_id, mock_host).await.is_ok(),);
-
-        game.add_unassigned(player_id, mock_player).await;
+        assert!(game.add_unassigned(player_id, mock_player).await.is_ok());
     }
 }

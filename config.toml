@@ -1,0 +1,23 @@
+[fuiz]
+max_slides_count = 100
+max_title_length = 100
+max_player_count = 100
+
+[fuiz.multiple_choice]
+min_title_length = 1
+max_title_length = 100
+min_introduce_question = 1
+max_introduce_question = 30
+min_time_limit = 5
+max_time_limit = 30
+max_answer_count = 8
+
+[fuiz.corkboard]
+id_length = 16
+max_alt_length = 200
+
+[fuiz.answer_text]
+max_length = 100
+
+[fuiz.bingo]
+max_answer_count = 100

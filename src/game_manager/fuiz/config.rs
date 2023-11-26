@@ -1,3 +1,4 @@
+use garde::Validate;
 use serde::{Deserialize, Serialize};
 
 use crate::game_manager::{
@@ -11,16 +12,23 @@ use super::{
     bingo, multiple_choice,
 };
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+const CONFIG: crate::config::fuiz::FuizConfig = crate::CONFIG.fuiz;
+
+const MAX_SLIDES_COUNT: usize = CONFIG.max_slides_count.unsigned_abs() as usize;
+const MAX_TITLE_LENGTH: usize = CONFIG.max_title_length.unsigned_abs() as usize;
+
+#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub struct FuizConfig {
+    #[garde(length(max = MAX_TITLE_LENGTH))]
     title: String,
+    #[garde(length(max = MAX_SLIDES_COUNT), dive)]
     slides: Vec<Slide>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub enum Slide {
-    MultipleChoice(multiple_choice::Slide),
-    Bingo(bingo::Slide),
+    MultipleChoice(#[garde(dive)] multiple_choice::Slide),
+    Bingo(#[garde(dive)] bingo::Slide),
 }
 
 impl FuizConfig {

@@ -1,17 +1,31 @@
+use garde::Validate;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub enum Media {
-    Image(Image),
+    Image(#[garde(dive)] Image),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+const CORKBOARD_CONFIG: crate::config::fuiz::corkboard::CorkboardConfig =
+    crate::CONFIG.fuiz.corkboard;
+
+const ID_LENGTH: usize = CORKBOARD_CONFIG.id_length.unsigned_abs() as usize;
+const MAX_ALT_LENGTH: usize = CORKBOARD_CONFIG.max_alt_length.unsigned_abs() as usize;
+
+#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub enum Image {
-    Corkboard { id: String, alt: String },
+    Corkboard {
+        #[garde(length(min = ID_LENGTH, max = ID_LENGTH))]
+        id: String,
+        #[garde(length(max = MAX_ALT_LENGTH))]
+        alt: String,
+    },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+const MAX_TEXT_LENGTH: usize = crate::CONFIG.fuiz.answer_text.max_length.unsigned_abs() as usize;
+
+#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub enum TextOrMedia {
-    Media(Media),
-    Text(String),
+    Media(#[garde(skip)] Media),
+    Text(#[garde(length(max = MAX_TEXT_LENGTH))] String),
 }

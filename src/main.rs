@@ -23,28 +23,33 @@ extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
 
+static_toml::static_toml! {
+    #[static_toml(
+        suffix = Config,
+    )]
+    const CONFIG = include_toml!("config.toml");
+}
+
 struct AppState {
     game_manager: GameManager<Session>,
 }
 
-#[cfg(debug_assertions)]
 fn configure_cookie(cookie: CookieBuilder) -> Cookie {
-    cookie
-        .same_site(actix_web::cookie::SameSite::Lax)
-        .secure(false)
-        .path("/")
-        .http_only(true)
-        .finish()
-}
-
-#[cfg(not(debug_assertions))]
-fn configure_cookie(cookie: CookieBuilder) -> Cookie {
-    cookie
-        .same_site(actix_web::cookie::SameSite::None)
-        .secure(true)
-        .path("/")
-        .http_only(true)
-        .finish()
+    if cfg!(feature = "https") {
+        cookie
+            .same_site(actix_web::cookie::SameSite::None)
+            .secure(true)
+            .path("/")
+            .http_only(true)
+            .finish()
+    } else {
+        cookie
+            .same_site(actix_web::cookie::SameSite::Lax)
+            .secure(false)
+            .path("/")
+            .http_only(true)
+            .finish()
+    }
 }
 
 #[post("/add")]
@@ -136,7 +141,7 @@ async fn watch(
                 watcher_id.to_string(),
             )))?;
 
-            ongoing_game.add_unassigned(watcher_id, own_session).await;
+            ongoing_game.add_unassigned(watcher_id, own_session).await?;
 
             watcher_id
         }
@@ -221,14 +226,14 @@ async fn main() -> std::io::Result<()> {
             .service(add)
             .service(watch);
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "https")]
+        {
+            app
+        }
+        #[cfg(not(feature = "https"))]
         {
             let cors = actix_cors::Cors::permissive();
             app.wrap(cors)
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            app
         }
     })
     .bind((

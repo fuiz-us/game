@@ -7,6 +7,7 @@ use std::{
 use actix_web::rt::time::Instant;
 use atomig::{Atom, Atomic, Ordering};
 use dashmap::DashMap;
+use garde::Validate;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
@@ -32,23 +33,67 @@ enum SlideState {
     AnswersResults,
 }
 
+type ValidationResult = garde::Result;
+
+fn validate_duration<const MIN_SECONDS: u64, const MAX_SECONDS: u64>(
+    field: &'static str,
+    val: &Duration,
+) -> ValidationResult {
+    match (MIN_SECONDS..=MAX_SECONDS).contains(&val.as_secs()) {
+        true => Ok(()),
+        false => Err(garde::Error::new(format!(
+            "{field} is outside of the bounds [{MIN_SECONDS},{MAX_SECONDS}]",
+        ))),
+    }
+}
+
+const CONFIG: crate::config::fuiz::multiple_choice::MultipleChoiceConfig =
+    crate::CONFIG.fuiz.multiple_choice;
+
+const MIN_TITLE_LENGTH: usize = CONFIG.min_title_length.unsigned_abs() as usize;
+const MIN_INTRODUCE_QUESTION: u64 = CONFIG.min_introduce_question.unsigned_abs();
+const MIN_TIME_LIMIT: u64 = CONFIG.min_time_limit.unsigned_abs();
+
+const MAX_TIME_LIMIT: u64 = CONFIG.max_time_limit.unsigned_abs();
+const MAX_TITLE_LENGTH: usize = CONFIG.max_title_length.unsigned_abs() as usize;
+const MAX_INTRODUCE_QUESTION: u64 = CONFIG.max_introduce_question.unsigned_abs();
+
+const MAX_ANSWER_COUNT: usize = CONFIG.max_answer_count.unsigned_abs() as usize;
+
+fn validate_introduce_question(val: &Duration) -> ValidationResult {
+    validate_duration::<MIN_INTRODUCE_QUESTION, MAX_INTRODUCE_QUESTION>("introduce_question", val)
+}
+
+fn validate_time_limit(val: &Duration) -> ValidationResult {
+    validate_duration::<MIN_TIME_LIMIT, MAX_TIME_LIMIT>("time_limit", val)
+}
+
 #[serde_with::serde_as]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize, Validate)]
 pub struct Slide {
+    #[garde(length(min = MIN_TITLE_LENGTH, max = MAX_TITLE_LENGTH))]
     title: String,
+    #[garde(dive)]
     media: Option<Media>,
+    #[garde(custom(|v, _| validate_introduce_question(v)))]
     #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
     introduce_question: Duration,
+    #[garde(custom(|v, _| validate_time_limit(v)))]
     #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
     time_limit: Duration,
+    #[garde(skip)]
     points_awarded: u64,
+    #[garde(length(max = MAX_ANSWER_COUNT))]
     answers: Vec<AnswerChoice>,
 
     #[serde(skip)]
+    #[garde(skip)]
     user_answers: DashMap<WatcherId, (usize, Instant)>,
     #[serde(skip)]
+    #[garde(skip)]
     answer_start: Arc<Mutex<Option<Instant>>>,
     #[serde(skip)]
+    #[garde(skip)]
     slide_state: Arc<Atomic<SlideState>>,
 }
 
