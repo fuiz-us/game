@@ -10,6 +10,7 @@ use dashmap::DashMap;
 use garde::Validate;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use serde_with::skip_serializing_none;
 
 use crate::game_manager::{
     game,
@@ -98,6 +99,7 @@ pub struct Slide {
 }
 
 #[serde_with::serde_as]
+#[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
 pub enum OutgoingMessage {
     QuestionAnnouncment {
@@ -126,6 +128,7 @@ impl game::OutgoingMessage for OutgoingMessage {
 }
 
 #[serde_with::serde_as]
+#[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
 pub enum StateMessage {
     QuestionAnnouncment {
