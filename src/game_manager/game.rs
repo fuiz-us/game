@@ -8,6 +8,7 @@ use actix_ws::Closed;
 use erased_serde::serialize_trait_object;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use serde_with::skip_serializing_none;
 
 use crate::game_manager::watcher::WatcherValue;
 
@@ -108,6 +109,7 @@ pub enum IncomingHostMessage {
     Index(usize),
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
 pub enum GameOutgoingMessage {
     WaitingScreen(WaitingScreenMessage),
