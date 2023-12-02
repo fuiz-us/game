@@ -560,12 +560,31 @@ impl<T: Tunnel> Game<T> {
         };
 
         match watcher_value.clone() {
+            WatcherValue::Host => {
+                session
+                    .send(
+                        &self
+                            .state_message(watcher_id, watcher_value.kind())
+                            .to_message()
+                            .expect("default serializer shouldn't fail"),
+                    )
+                    .await?;
+            }
             WatcherValue::Player(name) => {
                 session
                     .send(
                         &GameOutgoingMessage::NameAssign(name)
                             .to_message()
                             .expect("Serializer should never fail"),
+                    )
+                    .await?;
+
+                session
+                    .send(
+                        &self
+                            .state_message(watcher_id, watcher_value.kind())
+                            .to_message()
+                            .expect("default serializer shouldn't fail"),
                     )
                     .await?;
             }
@@ -578,17 +597,7 @@ impl<T: Tunnel> Game<T> {
                     )
                     .await?;
             }
-            _ => {}
         }
-
-        session
-            .send(
-                &self
-                    .state_message(watcher_id, watcher_value.kind())
-                    .to_message()
-                    .expect("default serializer shouldn't fail"),
-            )
-            .await?;
 
         self.watchers.update_watcher_session(watcher_id, session);
 
