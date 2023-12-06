@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use dashmap::{mapref::entry::Entry, DashMap};
+use concread::CowCell;
 use derive_where::derive_where;
+use enum_map::EnumMap;
 
 use self::{fuiz::config::FuizConfig, game::Game, game_id::GameId, session::Tunnel};
 
@@ -13,32 +14,46 @@ pub mod names;
 pub mod session;
 pub mod watcher;
 
+#[derive_where(Debug)]
+struct SharedGame<T: Tunnel>(CowCell<Option<Arc<Game<T>>>>);
+
+impl<T: Tunnel> Default for SharedGame<T> {
+    fn default() -> Self {
+        Self(CowCell::new(None))
+    }
+}
+
 #[derive_where(Debug, Default)]
 pub struct GameManager<T: Tunnel> {
-    games: DashMap<GameId, Arc<Game<T>>>,
+    games: EnumMap<GameId, SharedGame<T>>,
 }
 
 impl<T: Tunnel> GameManager<T> {
     pub fn add_game(&self, fuiz: FuizConfig) -> GameId {
+        let shared_game = Arc::new(Game::new(fuiz));
+
         loop {
             let game_id = GameId::new();
 
-            match self.games.entry(game_id.clone()) {
-                Entry::Occupied(_) => continue,
-                Entry::Vacant(v) => {
-                    let game = Arc::new(Game::new(game_id.clone(), fuiz));
-                    v.insert(game);
-                    return game_id;
-                }
+            let Some(mut game) = self.games[game_id].0.try_write() else {
+                continue
+            };
+
+            if game.is_none() {
+                *game = Some(shared_game);
+                game.commit();
+                return game_id;
             }
         }
     }
 
     pub fn get_game(&self, game_id: &GameId) -> Option<Arc<Game<T>>> {
-        self.games.get(game_id).map(|g| g.value().to_owned())
+        (*self.games[*game_id].0.read()).clone()
     }
 
     pub fn remove_game(&self, game_id: &GameId) {
-        self.games.remove(game_id);
+        let mut game = self.games[*game_id].0.write();
+        *game = None;
+        game.commit();
     }
 }

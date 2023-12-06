@@ -56,8 +56,6 @@ fn configure_cookie(cookie: CookieBuilder) -> Cookie {
 async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Responder {
     let game_id = data.game_manager.add_game(fuiz.into_inner());
 
-    let stale_game_id = game_id.clone();
-
     let host_id = WatcherId::default();
 
     let Some(ongoing_game) = data.game_manager.get_game(&game_id) else {
@@ -71,15 +69,16 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
     // Stale Detection
     actix_web::rt::spawn(async move {
         loop {
-            actix_web::rt::time::sleep(std::time::Duration::from_secs(60)).await;
-            let Some(ongoing_game) = stale_data.game_manager.get_game(&stale_game_id) else {
+            actix_web::rt::time::sleep(std::time::Duration::from_secs(5)).await;
+            let Some(ongoing_game) = stale_data.game_manager.get_game(&game_id) else {
                 break;
             };
             if matches!(ongoing_game.state(), game_manager::game::GameState::Done)
-                || ongoing_game.updated().elapsed() > std::time::Duration::from_secs(280)
+                || ongoing_game.updated().elapsed() > std::time::Duration::from_secs(30)
             {
                 ongoing_game.mark_as_done().await;
-                stale_data.game_manager.remove_game(&stale_game_id);
+                stale_data.game_manager.remove_game(&game_id);
+                info!("clearing, {}", game_id);
                 break;
             }
         }
@@ -87,14 +86,12 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
 
     let cookie = configure_cookie(CookieBuilder::new("wid", host_id.to_string()));
 
-    Ok(HttpResponse::Ok().cookie(cookie).body(game_id.id))
+    Ok(HttpResponse::Ok().cookie(cookie).body(game_id.to_string()))
 }
 
 #[get("/alive/{game_id}")]
-async fn alive(data: web::Data<AppState>, game_id: web::Path<String>) -> impl Responder {
-    match data.game_manager.get_game(&GameId {
-        id: game_id.into_inner().to_uppercase(),
-    }) {
+async fn alive(data: web::Data<AppState>, game_id: web::Path<GameId>) -> impl Responder {
+    match data.game_manager.get_game(&game_id) {
         Some(x) => !x.state().is_done(),
         None => false,
     }
@@ -106,13 +103,9 @@ async fn watch(
     data: web::Data<AppState>,
     req: HttpRequest,
     body: web::Payload,
-    game_id: web::Path<String>,
+    game_id: web::Path<GameId>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (mut response, mut session, mut msg_stream) = actix_ws::handle(&req, body)?;
-
-    let game_id = GameId {
-        id: game_id.into_inner().to_uppercase(),
-    };
 
     let Some(ongoing_game) = data.game_manager.get_game(&game_id) else {
         return Err(actix_web::error::ErrorNotFound("GameId not found"));
@@ -228,7 +221,13 @@ async fn main() -> std::io::Result<()> {
 
         #[cfg(feature = "https")]
         {
-            app
+            let cors = actix_cors::Cors::default()
+                .allowed_origin("https://fuiz.us")
+                .allowed_methods(vec!["GET", "POST"])
+                .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
+                .supports_credentials()
+                .allowed_header(http::header::CONTENT_TYPE);
+            app.wrap(cors)
         }
         #[cfg(not(feature = "https"))]
         {

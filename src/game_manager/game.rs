@@ -14,7 +14,6 @@ use crate::game_manager::watcher::WatcherValue;
 
 use super::{
     fuiz::config::FuizConfig,
-    game_id::GameId,
     leaderboard::{Leaderboard, LeaderboardMessage, ScoreMessage},
     names::{Names, NamesError},
     session::Tunnel,
@@ -35,7 +34,6 @@ impl GameState {
 }
 
 pub struct Game<T: Tunnel> {
-    pub game_id: GameId,
     pub fuiz_config: FuizConfig,
     pub watchers: Watchers<T>,
     pub names: Names,
@@ -47,7 +45,6 @@ pub struct Game<T: Tunnel> {
 impl<T: Tunnel> Debug for Game<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Game")
-            .field("game_id", &self.game_id)
             .field("fuiz", &self.fuiz_config)
             .finish()
     }
@@ -165,9 +162,8 @@ impl StateMessageSend for Box<dyn StateMessage> {
 }
 
 impl<T: Tunnel> Game<T> {
-    pub fn new(game_id: GameId, fuiz: FuizConfig) -> Self {
+    pub fn new(fuiz: FuizConfig) -> Self {
         Self {
-            game_id,
             fuiz_config: fuiz,
             watchers: Watchers::default(),
             names: Names::default(),
@@ -178,7 +174,6 @@ impl<T: Tunnel> Game<T> {
     }
 
     pub async fn play(&self) {
-        info!("PLAYING {}", self.game_id.id);
         self.change_state(GameState::Slide {
             index: 0,
             finished: false,
@@ -622,7 +617,6 @@ mod tests {
     use crate::game_manager::{
         fuiz::config::FuizConfig,
         game::Game,
-        game_id::GameId,
         session::MockTunnel,
         watcher::{WatcherId, WatcherValue},
     };
@@ -631,7 +625,7 @@ mod tests {
     async fn waiting_screen() {
         let fuiz = FuizConfig::new("Title".to_owned(), vec![]);
 
-        let game = Game::new(GameId::new(), fuiz);
+        let game = Game::new(fuiz);
 
         let mut mock_host = MockTunnel::new();
 
