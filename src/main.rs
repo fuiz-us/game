@@ -1,3 +1,5 @@
+mod clashmap;
+mod clashset;
 mod game_manager;
 
 use crate::game_manager::{

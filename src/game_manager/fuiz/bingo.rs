@@ -1,15 +1,18 @@
 use std::sync::Arc;
 
 use atomig::{Atom, Atomic, Ordering};
-use dashmap::{DashMap, DashSet};
 use garde::Validate;
 use itertools::{izip, Itertools};
 use serde::{Deserialize, Serialize};
 
-use crate::game_manager::{
-    game::{self, Game, IncomingHostMessage, IncomingMessage, IncomingPlayerMessage},
-    session::Tunnel,
-    watcher::{WatcherId, WatcherValueKind},
+use crate::{
+    clashmap::ClashMap,
+    clashset::ClashSet,
+    game_manager::{
+        game::{self, Game, IncomingHostMessage, IncomingMessage, IncomingPlayerMessage},
+        session::Tunnel,
+        watcher::{WatcherId, WatcherValueKind},
+    },
 };
 
 use super::config::FuizConfig;
@@ -37,10 +40,10 @@ pub struct Slide {
 
     #[serde(skip)]
     #[garde(skip)]
-    user_votes: DashMap<usize, DashSet<WatcherId>>,
+    user_votes: ClashMap<usize, ClashSet<WatcherId>>,
     #[serde(skip)]
     #[garde(skip)]
-    crossed: DashSet<usize>,
+    crossed: ClashSet<usize>,
     #[serde(skip)]
     #[garde(skip)]
     slide_state: Arc<Atomic<SlideState>>,
@@ -176,7 +179,7 @@ impl Slide {
                             rng.choose_multiple(0..self.answers.len(), self.board_size)
                         }
                     },
-                    crossed: self.crossed.iter().map(|x| *x).collect_vec(),
+                    crossed: self.crossed.iter().collect_vec(),
                     user_votes: self.get_user_votes(),
                 })
             })
@@ -262,7 +265,7 @@ impl Slide {
                         rng.choose_multiple(0..self.answers.len(), self.board_size)
                     }
                 },
-                crossed: self.crossed.iter().map(|x| *x).collect_vec(),
+                crossed: self.crossed.iter().collect_vec(),
                 user_votes: self.get_user_votes(),
             },
             SlideState::Winners => StateMessage::Winners {
@@ -275,8 +278,8 @@ impl Slide {
 
     fn get_user_votes(&self) -> Vec<usize> {
         let mut user_votes = vec![0; self.answers.len()];
-        for (i, users) in self.user_votes.clone().into_read_only().iter() {
-            if let Some(u) = user_votes.get_mut(*i) {
+        for (i, users) in self.user_votes.clone().iter() {
+            if let Some(u) = user_votes.get_mut(i) {
                 *u = users.len();
             }
         }
@@ -308,7 +311,7 @@ impl Slide {
                     self.crossed.insert(u);
                     let winners = self.get_winners(game);
                     game.announce(OutgoingMessage::Cross {
-                        crossed: self.crossed.iter().map(|x| *x).collect_vec(),
+                        crossed: self.crossed.iter().collect_vec(),
                     })
                     .await;
                     if !winners.is_empty() {
@@ -318,8 +321,9 @@ impl Slide {
             },
             IncomingMessage::Player(IncomingPlayerMessage::IndexAnswer(v)) => {
                 {
-                    let s = self.user_votes.entry(v).or_default();
-                    s.insert(watcher_id);
+                    self.user_votes.modify_entry_or_default(v, |s| {
+                        s.insert(watcher_id);
+                    });
                 }
                 game.announce(OutgoingMessage::Votes {
                     user_votes: self.get_user_votes(),

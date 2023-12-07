@@ -1,13 +1,13 @@
 use std::str::FromStr;
 
-use dashmap::{DashMap, DashSet};
-use derive_where::derive_where;
 use enum_map::{Enum, EnumMap};
 use itertools::Itertools;
 use kinded::Kinded;
 use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;
+
+use crate::{clashmap::ClashMap, clashset::ClashSet};
 
 use super::session::Tunnel;
 
@@ -48,11 +48,11 @@ pub enum WatcherValue {
     Player(String),
 }
 
-#[derive_where(Default)]
+#[derive_where::derive_where(Default)]
 pub struct Watchers<T: Tunnel> {
-    sessions: DashMap<WatcherId, T>,
-    watchers: DashMap<WatcherId, WatcherValue>,
-    reverse_watchers: EnumMap<WatcherValueKind, DashSet<WatcherId>>,
+    sessions: ClashMap<WatcherId, T>,
+    watchers: ClashMap<WatcherId, WatcherValue>,
+    reverse_watchers: EnumMap<WatcherValueKind, ClashSet<WatcherId>>,
 }
 
 const MAX_PLAYERS: usize = crate::CONFIG.fuiz.max_player_count.unsigned_abs() as usize;
@@ -71,7 +71,7 @@ impl<T: Tunnel> Watchers<T> {
             .values()
             .flat_map(|x| x.iter())
             .flat_map(|x| match (self.sessions.get(&x), self.watchers.get(&x)) {
-                (Some(t), Some(v)) => Some((x.to_owned(), t.to_owned(), v.value().to_owned())),
+                (Some(t), Some(v)) => Some((x, t, v)),
                 _ => None,
             })
             .collect_vec()
@@ -81,7 +81,7 @@ impl<T: Tunnel> Watchers<T> {
         self.reverse_watchers[filter]
             .iter()
             .flat_map(|x| match (self.sessions.get(&x), self.watchers.get(&x)) {
-                (Some(t), Some(v)) => Some((x.to_owned(), t.to_owned(), v.value().to_owned())),
+                (Some(t), Some(v)) => Some((x.to_owned(), t, v)),
                 _ => None,
             })
             .collect_vec()
@@ -131,11 +131,11 @@ impl<T: Tunnel> Watchers<T> {
     }
 
     pub fn get_watcher_value(&self, watcher_id: WatcherId) -> Option<WatcherValue> {
-        self.watchers.get(&watcher_id).map(|x| x.value().to_owned())
+        self.watchers.get(&watcher_id)
     }
 
     pub fn has_watcher(&self, watcher_id: WatcherId) -> bool {
-        self.watchers.get(&watcher_id).is_some()
+        self.watchers.contains_key(&watcher_id)
     }
 
     pub fn reserve_watcher(&self, watcher_id: WatcherId, watcher_value: WatcherValue) {

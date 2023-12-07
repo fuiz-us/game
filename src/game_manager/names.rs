@@ -1,14 +1,15 @@
-use dashmap::{mapref::entry::Entry, DashMap, DashSet};
 use rustrict::CensorStr;
 use serde::Serialize;
 use thiserror::Error;
+
+use crate::{clashmap::ClashMap, clashset::ClashSet};
 
 use super::watcher::WatcherId;
 
 #[derive(Debug, Default, Clone)]
 pub struct Names {
-    mapping: DashMap<WatcherId, String>,
-    existing_names: DashSet<String>,
+    mapping: ClashMap<WatcherId, String>,
+    existing_names: ClashSet<String>,
 }
 
 #[derive(Error, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +30,7 @@ impl actix_web::error::ResponseError for NamesError {}
 
 impl Names {
     pub fn get_name(&self, id: &WatcherId) -> Option<String> {
-        self.mapping.get(id).as_ref().map(|x| x.value().to_owned())
+        self.mapping.get(id)
     }
 
     pub fn set_name(&self, id: WatcherId, name: String) -> Result<String, NamesError> {
@@ -46,12 +47,12 @@ impl Names {
         if !self.existing_names.insert(name.to_owned()) {
             return Err(NamesError::Used);
         }
-        match self.mapping.entry(id) {
-            Entry::Occupied(_) => Err(NamesError::Assigned),
-            Entry::Vacant(v) => {
-                v.insert(name.to_owned());
-                Ok(name.to_owned())
+        match self.mapping.insert_if_vacant(id, name.to_owned()) {
+            Some(_) => {
+                self.existing_names.remove(name);
+                Err(NamesError::Assigned)
             }
+            None => Ok(name.to_owned()),
         }
     }
 }

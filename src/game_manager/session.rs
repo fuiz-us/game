@@ -10,7 +10,7 @@ pub struct Session {
 pub trait Tunnel: Clone {
     async fn send(&self, message: &str) -> Result<(), Closed>;
 
-    fn close(&self);
+    fn close(self);
 }
 
 impl Session {
@@ -27,10 +27,9 @@ impl Tunnel for Session {
         session.text(message).await
     }
 
-    fn close(&self) {
-        let session = self.session.clone();
+    fn close(self) {
         actix_web::rt::spawn(async move {
-            let _ = session.close(None).await;
+            let _ = self.session.close(None).await;
         });
     }
 }
