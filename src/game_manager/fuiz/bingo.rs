@@ -320,11 +320,9 @@ impl Slide {
                 }
             },
             IncomingMessage::Player(IncomingPlayerMessage::IndexAnswer(v)) => {
-                {
-                    self.user_votes.modify_entry_or_default(v, |s| {
-                        s.insert(watcher_id);
-                    });
-                }
+                self.user_votes.modify_entry_or_default(v, |s| {
+                    s.insert(watcher_id);
+                });
                 game.announce(OutgoingMessage::Votes {
                     user_votes: self.get_user_votes(),
                 })
