@@ -1,54 +1,36 @@
-use std::sync::Mutex;
-
 use actix_ws::Closed;
 use async_trait::async_trait;
 
-#[cfg(test)]
-use mockall::automock;
-
+#[derive(Clone)]
 pub struct Session {
-    session: Mutex<actix_ws::Session>,
+    session: actix_ws::Session,
 }
 
-#[cfg_attr(test, automock)]
 #[async_trait]
-pub trait Tunnel {
+pub trait Tunnel: Clone {
     async fn send(&self, message: &str) -> Result<(), Closed>;
 
-    async fn close(&self);
+    fn close(&self);
 }
 
 impl Session {
     pub fn new(session: actix_ws::Session) -> Self {
-        Self {
-            session: Mutex::new(session),
-        }
+        Self { session }
     }
 }
 
 #[async_trait]
 impl Tunnel for Session {
     async fn send(&self, message: &str) -> Result<(), Closed> {
-        // This avoids holding the mutex lock while it awaits sending the message
-        let session = match self.session.lock() {
-            Ok(s) => Ok(s.clone()),
-            Err(_) => Err(Closed),
-        };
+        let mut session = self.session.clone();
 
-        match session {
-            Ok(mut session) => session.text(message).await,
-            Err(c) => Err(c),
-        }
+        session.text(message).await
     }
 
-    async fn close(&self) {
-        let session = match self.session.lock() {
-            Ok(s) => Ok(s.clone()),
-            Err(_) => Err(Closed),
-        };
-
-        if let Ok(session) = session {
+    fn close(&self) {
+        let session = self.session.clone();
+        actix_web::rt::spawn(async move {
             let _ = session.close(None).await;
-        }
+        });
     }
 }

@@ -32,11 +32,6 @@ pub enum Slide {
 }
 
 impl FuizConfig {
-    #[cfg(test)]
-    pub fn new(title: String, slides: Vec<Slide>) -> Self {
-        Self { title, slides }
-    }
-
     pub fn len(&self) -> usize {
         self.slides.len()
     }

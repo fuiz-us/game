@@ -66,35 +66,22 @@ pub enum WatcherError {
 impl actix_web::error::ResponseError for WatcherError {}
 
 impl<T: Tunnel> Watchers<T> {
-    pub fn vec(
-        &self,
-    ) -> Vec<(
-        WatcherId,
-        dashmap::mapref::one::Ref<'_, WatcherId, T>,
-        WatcherValue,
-    )> {
+    pub fn vec(&self) -> Vec<(WatcherId, T, WatcherValue)> {
         self.reverse_watchers
             .values()
             .flat_map(|x| x.iter())
             .flat_map(|x| match (self.sessions.get(&x), self.watchers.get(&x)) {
-                (Some(t), Some(v)) => Some((x.to_owned(), t, v.value().to_owned())),
+                (Some(t), Some(v)) => Some((x.to_owned(), t.to_owned(), v.value().to_owned())),
                 _ => None,
             })
             .collect_vec()
     }
 
-    pub fn specific_vec(
-        &self,
-        filter: WatcherValueKind,
-    ) -> Vec<(
-        WatcherId,
-        dashmap::mapref::one::Ref<'_, WatcherId, T>,
-        WatcherValue,
-    )> {
+    pub fn specific_vec(&self, filter: WatcherValueKind) -> Vec<(WatcherId, T, WatcherValue)> {
         self.reverse_watchers[filter]
             .iter()
             .flat_map(|x| match (self.sessions.get(&x), self.watchers.get(&x)) {
-                (Some(t), Some(v)) => Some((x.to_owned(), t, v.value().to_owned())),
+                (Some(t), Some(v)) => Some((x.to_owned(), t.to_owned(), v.value().to_owned())),
                 _ => None,
             })
             .collect_vec()
@@ -117,7 +104,7 @@ impl<T: Tunnel> Watchers<T> {
         }
 
         if let Some(x) = self.sessions.insert(watcher_id, session) {
-            x.close().await;
+            x.close();
         }
 
         self.watchers.insert(watcher_id, watcher_value);
@@ -159,7 +146,7 @@ impl<T: Tunnel> Watchers<T> {
 
     pub async fn remove_watcher_session(&self, watcher_id: &WatcherId) {
         if let Some((_, x)) = self.sessions.remove(watcher_id) {
-            x.close().await;
+            x.close();
         }
     }
 

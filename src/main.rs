@@ -224,7 +224,10 @@ async fn main() -> std::io::Result<()> {
             let cors = actix_cors::Cors::default()
                 .allowed_origin("https://fuiz.us")
                 .allowed_methods(vec!["GET", "POST"])
-                .allowed_headers(vec![actix_web::http::header::AUTHORIZATION, actix_web::http::header::ACCEPT])
+                .allowed_headers(vec![
+                    actix_web::http::header::AUTHORIZATION,
+                    actix_web::http::header::ACCEPT,
+                ])
                 .supports_credentials()
                 .allowed_header(actix_web::http::header::CONTENT_TYPE);
             app.wrap(cors)
@@ -236,10 +239,10 @@ async fn main() -> std::io::Result<()> {
         }
     })
     .bind((
-        if cfg!(debug_assertions) {
-            "0.0.0.0"
-        } else {
+        if cfg!(feature = "https") {
             "127.0.0.1"
+        } else {
+            "0.0.0.0"
         },
         8080,
     ))?

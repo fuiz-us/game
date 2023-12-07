@@ -36,7 +36,7 @@ impl<T: Tunnel> GameManager<T> {
             let game_id = GameId::new();
 
             let Some(mut game) = self.games[game_id].0.try_write() else {
-                continue
+                continue;
             };
 
             if game.is_none() {
