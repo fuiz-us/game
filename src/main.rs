@@ -69,12 +69,12 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
     // Stale Detection
     actix_web::rt::spawn(async move {
         loop {
-            actix_web::rt::time::sleep(std::time::Duration::from_secs(5)).await;
+            actix_web::rt::time::sleep(std::time::Duration::from_secs(60)).await;
             let Some(ongoing_game) = stale_data.game_manager.get_game(&game_id) else {
                 break;
             };
             if matches!(ongoing_game.state(), game_manager::game::GameState::Done)
-                || ongoing_game.updated().elapsed() > std::time::Duration::from_secs(30)
+                || ongoing_game.updated().elapsed() > std::time::Duration::from_secs(60 * 5)
             {
                 ongoing_game.mark_as_done().await;
                 stale_data.game_manager.remove_game(&game_id);
