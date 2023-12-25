@@ -19,10 +19,6 @@ pub mod names;
 pub mod session;
 pub mod watcher;
 
-fn unbox<T>(boxed: &Box<T>) -> &T {
-    &boxed
-}
-
 #[derive_where(Debug, Default)]
 struct SharedGame<T: Tunnel>(parking_lot::RwLock<Option<Box<Game<T>>>>);
 
@@ -31,7 +27,7 @@ impl<T: Tunnel> SharedGame<T> {
         RwLockReadGuard::try_map(self.0.read(), |x| x.as_ref())
             .ok()
             .and_then(|x| match x.state().is_done() {
-                true => Some(MappedRwLockReadGuard::map(x, unbox)),
+                true => Some(MappedRwLockReadGuard::map(x, unbox_box::BoxExt::unbox_ref)),
                 false => None,
             })
     }
@@ -67,7 +63,8 @@ impl<T: Tunnel> GameManager<T> {
     }
 
     pub fn reserve_host(&self, game_id: GameId, watcher_id: WatcherId) -> Result<(), GameVanish> {
-        Ok(self.get_game(game_id)?.reserve_host(watcher_id))
+        self.get_game(game_id)?.reserve_host(watcher_id);
+        Ok(())
     }
 
     pub async fn add_unassigned(
@@ -102,10 +99,10 @@ impl<T: Tunnel> GameManager<T> {
         watcher_id: WatcherId,
         message: IncomingMessage,
     ) -> Result<(), GameVanish> {
-        Ok(self
-            .get_game(game_id)?
+        self.get_game(game_id)?
             .receive_message(watcher_id, message)
-            .await)
+            .await;
+        Ok(())
     }
 
     pub fn remove_watcher_session(
@@ -113,7 +110,8 @@ impl<T: Tunnel> GameManager<T> {
         game_id: GameId,
         watcher_id: WatcherId,
     ) -> Result<(), GameVanish> {
-        Ok(self.get_game(game_id)?.remove_watcher_session(watcher_id))
+        self.get_game(game_id)?.remove_watcher_session(watcher_id);
+        Ok(())
     }
 
     pub fn exists(&self, game_id: GameId) -> Result<(), GameVanish> {
