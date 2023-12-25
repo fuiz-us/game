@@ -4,7 +4,6 @@ use std::{
 };
 
 use actix_web::rt::time::Instant;
-use actix_ws::Closed;
 use erased_serde::serialize_trait_object;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -16,7 +15,7 @@ use super::{
     fuiz::config::FuizConfig,
     leaderboard::{Leaderboard, LeaderboardMessage, ScoreMessage},
     names::{Names, NamesError},
-    session::Tunnel,
+    session::{Closed, Tunnel},
     watcher::{WatcherError, WatcherId, WatcherValueKind, Watchers},
 };
 
@@ -273,7 +272,7 @@ impl<T: Tunnel> Game<T> {
         }
 
         for watcher in watchers_to_be_removed {
-            self.remove_watcher_session(watcher).await;
+            self.remove_watcher_session(watcher);
         }
     }
 
@@ -308,7 +307,7 @@ impl<T: Tunnel> Game<T> {
         }
 
         for watcher in watchers_to_be_removed {
-            self.remove_watcher_session(watcher).await;
+            self.remove_watcher_session(watcher);
         }
     }
 
@@ -326,7 +325,7 @@ impl<T: Tunnel> Game<T> {
         }
 
         for watcher in watchers_to_be_removed {
-            self.remove_watcher_session(watcher).await;
+            self.remove_watcher_session(watcher);
         }
     }
 
@@ -346,11 +345,11 @@ impl<T: Tunnel> Game<T> {
         self.watchers.send(&serialized_message, watcher_id).await;
     }
 
-    pub async fn mark_as_done(&self) {
+    pub fn mark_as_done(&self) {
         self.change_state(GameState::Done);
         let watchers = self.watchers.vec().iter().map(|(x, _, _)| *x).collect_vec();
         for watcher in watchers {
-            self.remove_watcher_session(watcher).await;
+            self.remove_watcher_session(watcher);
         }
     }
 
@@ -418,7 +417,7 @@ impl<T: Tunnel> Game<T> {
                 },
                 GameState::Done => {
                     if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
-                        self.mark_as_done().await;
+                        self.mark_as_done();
                     }
                 }
             },
@@ -535,18 +534,8 @@ impl<T: Tunnel> Game<T> {
         Ok(())
     }
 
-    pub fn reserve_watcher(
-        &self,
-        watcher: WatcherId,
-        watcher_value: WatcherValue,
-    ) -> Result<(), NamesError> {
-        if let WatcherValue::Player(s) = watcher_value.clone() {
-            self.names.set_name(watcher, s)?;
-        }
-
-        self.watchers.reserve_watcher(watcher, watcher_value);
-
-        Ok(())
+    pub fn reserve_host(&self, watcher: WatcherId) {
+        self.watchers.reserve_watcher(watcher, WatcherValue::Host);
     }
 
     pub async fn update_session(&self, watcher_id: WatcherId, session: T) -> Result<(), Closed> {
@@ -605,7 +594,7 @@ impl<T: Tunnel> Game<T> {
         self.watchers.has_watcher(watcher_id)
     }
 
-    pub async fn remove_watcher_session(&self, watcher: WatcherId) {
-        self.watchers.remove_watcher_session(&watcher).await;
+    pub fn remove_watcher_session(&self, watcher: WatcherId) {
+        self.watchers.remove_watcher_session(&watcher);
     }
 }

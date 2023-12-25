@@ -144,7 +144,7 @@ impl<T: Tunnel> Watchers<T> {
         self.reverse_watchers[kind].insert(watcher_id);
     }
 
-    pub async fn remove_watcher_session(&self, watcher_id: &WatcherId) {
+    pub fn remove_watcher_session(&self, watcher_id: &WatcherId) {
         if let Some((_, x)) = self.sessions.remove(watcher_id) {
             x.close();
         }

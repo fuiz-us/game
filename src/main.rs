@@ -3,9 +3,7 @@ mod clashset;
 mod game_manager;
 
 use crate::game_manager::{
-    fuiz::config::FuizConfig,
-    game_id::GameId,
-    watcher::{WatcherId, WatcherValue},
+    fuiz::config::FuizConfig, game_id::GameId, watcher::WatcherId, GameVanish,
 };
 use actix_web::{
     cookie::{Cookie, CookieBuilder},
@@ -60,11 +58,7 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
 
     let host_id = WatcherId::default();
 
-    let Some(ongoing_game) = data.game_manager.get_game(&game_id) else {
-        return Err(actix_web::error::ErrorNotFound("GameId not found"));
-    };
-
-    ongoing_game.reserve_watcher(host_id, WatcherValue::Host)?;
+    data.game_manager.reserve_host(game_id, host_id)?;
 
     let stale_data = data;
 
@@ -72,32 +66,28 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
     actix_web::rt::spawn(async move {
         loop {
             actix_web::rt::time::sleep(std::time::Duration::from_secs(60)).await;
-            let Some(ongoing_game) = stale_data.game_manager.get_game(&game_id) else {
-                break;
-            };
-            if matches!(ongoing_game.state(), game_manager::game::GameState::Done)
-                || ongoing_game.updated().elapsed() > std::time::Duration::from_secs(60 * 5)
-            {
-                ongoing_game.mark_as_done().await;
-                stale_data.game_manager.remove_game(&game_id);
-                info!("clearing, {}", game_id);
-                break;
+            match stale_data.game_manager.alive_check(game_id) {
+                Ok(true) => continue,
+                Ok(false) => {
+                    info!("clearing, {}", game_id);
+                    stale_data.game_manager.remove_game(game_id).await;
+                }
+                _ => break,
             }
         }
     });
 
     let cookie = configure_cookie(CookieBuilder::new("wid", host_id.to_string()));
 
-    Ok(HttpResponse::Ok().cookie(cookie).body(game_id.to_string()))
+    Ok::<_, GameVanish>(HttpResponse::Ok().cookie(cookie).body(game_id.to_string()))
 }
 
 #[get("/alive/{game_id}")]
 async fn alive(data: web::Data<AppState>, game_id: web::Path<GameId>) -> impl Responder {
-    match data.game_manager.get_game(&game_id) {
-        Some(x) => !x.state().is_done(),
-        None => false,
-    }
-    .to_string()
+    data.game_manager
+        .exists(game_id.into_inner())
+        .is_ok()
+        .to_string()
 }
 
 #[get("/watch/{game_id}")]
@@ -109,22 +99,17 @@ async fn watch(
 ) -> Result<HttpResponse, actix_web::Error> {
     let (mut response, mut session, mut msg_stream) = actix_ws::handle(&req, body)?;
 
-    let Some(ongoing_game) = data.game_manager.get_game(&game_id) else {
-        return Err(actix_web::error::ErrorNotFound("GameId not found"));
-    };
+    let game_id = *game_id;
 
-    if ongoing_game.state().is_done() {
-        return Err(actix_web::error::ErrorNotFound("GameId not found"));
-    }
+    data.game_manager.exists(game_id)?;
 
     let own_session = game_manager::session::Session::new(session.clone());
 
     let watcher_id = match req.cookie("wid").map(|x| WatcherId::from_str(x.value())) {
-        Some(Ok(watcher_id)) if ongoing_game.has_watcher(watcher_id) => {
-            ongoing_game
-                .update_session(watcher_id, own_session)
-                .await
-                .map_err(|_| actix_web::error::ErrorGone("Connection Closed"))?;
+        Some(Ok(watcher_id)) if data.game_manager.watcher_exists(game_id, watcher_id)? => {
+            data.game_manager
+                .update_session(game_id, watcher_id, own_session)
+                .await??;
 
             watcher_id
         }
@@ -136,7 +121,9 @@ async fn watch(
                 watcher_id.to_string(),
             )))?;
 
-            ongoing_game.add_unassigned(watcher_id, own_session).await?;
+            data.game_manager
+                .add_unassigned(game_id, watcher_id, own_session)
+                .await??;
 
             watcher_id
         }
@@ -162,11 +149,14 @@ async fn watch(
         }
     });
 
+    let data_thread = data.clone();
+
     actix_web::rt::spawn(async move {
         while let Some(Ok(msg)) = msg_stream.next().await {
-            if ongoing_game.state().is_done() {
+            if data.game_manager.exists(game_id).is_ok() {
                 break;
             }
+
             match msg {
                 actix_ws::Message::Pong(bytes) => {
                     let last_value = latest_value.load(atomig::Ordering::SeqCst);
@@ -186,9 +176,12 @@ async fn watch(
                 }
                 actix_ws::Message::Text(s) => {
                     if let Ok(message) = serde_json::from_str(s.as_ref()) {
-                        let inner_game = ongoing_game.clone();
+                        let data_thread = data_thread.clone();
                         actix_web::rt::spawn(async move {
-                            inner_game.receive_message(watcher_id, message).await;
+                            let _ = data_thread
+                                .game_manager
+                                .receive_message(game_id, watcher_id, message)
+                                .await;
                         });
                     }
                 }
@@ -196,8 +189,9 @@ async fn watch(
             }
         }
 
-        ongoing_game.remove_watcher_session(watcher_id).await;
-        ongoing_game.announce_waiting().await;
+        let _ = data
+            .game_manager
+            .remove_watcher_session(game_id, watcher_id);
         session.close(None).await.ok();
     });
 

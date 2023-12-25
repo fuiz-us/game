@@ -1,10 +1,16 @@
-use actix_ws::Closed;
 use async_trait::async_trait;
+use thiserror::Error;
 
 #[derive(Clone)]
 pub struct Session {
     session: actix_ws::Session,
 }
+
+#[derive(Debug, Error)]
+#[error("connection was closed")]
+pub struct Closed {}
+
+impl actix_web::error::ResponseError for Closed {}
 
 #[async_trait]
 pub trait Tunnel: Clone {
@@ -24,7 +30,7 @@ impl Tunnel for Session {
     async fn send(&self, message: &str) -> Result<(), Closed> {
         let mut session = self.session.clone();
 
-        session.text(message).await
+        session.text(message).await.map_err(|_| Closed {})
     }
 
     fn close(self) {
