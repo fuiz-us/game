@@ -156,25 +156,26 @@ async fn watch(
                 actix_ws::Message::Text(s) => {
                     if let Ok(message) = serde_json::from_str(s.as_ref()) {
                         match message {
-                            IncomingMessage::Ghost(IncomingGhostMessage::ClaimId(id)) => {
+                            IncomingMessage::Ghost(IncomingGhostMessage::ClaimId(id))
                                 if matches!(
                                     data_thread.game_manager.watcher_exists(game_id, id),
                                     Ok(true)
-                                ) {
-                                    if data_thread
-                                        .game_manager
-                                        .update_session(game_id, id, own_session.clone())
-                                        .await
-                                        .ok()
-                                        .and_then(std::result::Result::ok)
-                                        .is_none()
-                                    {
-                                        break;
-                                    }
-                                    watcher_id = Some(id);
+                                ) =>
+                            {
+                                if data_thread
+                                    .game_manager
+                                    .update_session(game_id, id, own_session.clone())
+                                    .await
+                                    .ok()
+                                    .and_then(std::result::Result::ok)
+                                    .is_none()
+                                {
+                                    break;
                                 }
+
+                                watcher_id = Some(id);
                             }
-                            IncomingMessage::Ghost(IncomingGhostMessage::DemandId) => {
+                            IncomingMessage::Ghost(_) => {
                                 let new_id = WatcherId::new();
                                 watcher_id = Some(new_id);
 
