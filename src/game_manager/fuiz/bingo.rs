@@ -9,13 +9,13 @@ use crate::{
     clashmap::ClashMap,
     clashset::ClashSet,
     game_manager::{
-        game::{self, Game, IncomingHostMessage, IncomingMessage, IncomingPlayerMessage},
+        game::{Game, IncomingHostMessage, IncomingMessage, IncomingPlayerMessage},
         session::Tunnel,
-        watcher::{WatcherId, WatcherValueKind},
+        watcher::{Id, ValueKind},
     },
 };
 
-use super::config::FuizConfig;
+use super::config::Fuiz;
 
 #[derive(Atom, Clone, Copy, Debug, Default)]
 #[repr(u8)]
@@ -40,7 +40,7 @@ pub struct Slide {
 
     #[serde(skip)]
     #[garde(skip)]
-    user_votes: ClashMap<usize, ClashSet<WatcherId>>,
+    user_votes: ClashMap<usize, ClashSet<Id>>,
     #[serde(skip)]
     #[garde(skip)]
     crossed: ClashSet<usize>,
@@ -51,7 +51,7 @@ pub struct Slide {
 
 #[serde_with::serde_as]
 #[derive(Debug, Serialize, Clone)]
-pub enum OutgoingMessage {
+pub enum UpdateMessage {
     List {
         index: usize,
         count: usize,
@@ -77,15 +77,9 @@ pub struct Word {
     text: String,
 }
 
-impl game::OutgoingMessage for OutgoingMessage {
-    fn identifier(&self) -> &'static str {
-        "Bingo"
-    }
-}
-
 #[serde_with::serde_as]
 #[derive(Debug, Serialize, Clone)]
-pub enum StateMessage {
+pub enum SyncMessage {
     List {
         index: usize,
         count: usize,
@@ -101,14 +95,8 @@ pub enum StateMessage {
     },
 }
 
-impl game::StateMessage for StateMessage {
-    fn identifier(&self) -> &'static str {
-        "Bingo"
-    }
-}
-
 fn is_bingo(cells: &[bool]) -> bool {
-    let col_count = (cells.len() as f64).sqrt().ceil() as usize;
+    let col_count = num_integer::Roots::sqrt(&cells.len());
 
     let row_count = cells.len() / col_count;
 
@@ -145,45 +133,40 @@ fn is_bingo(cells: &[bool]) -> bool {
 }
 
 impl Slide {
-    pub async fn play<T: Tunnel>(
-        &self,
-        game: &Game<T>,
-        _fuiz: &FuizConfig,
-        index: usize,
-        count: usize,
-    ) {
-        self.send_list(game, index, count).await;
+    pub fn play<T: Tunnel>(&self, game: &Game<T>, _fuiz: &Fuiz, index: usize, count: usize) {
+        self.send_list(game, index, count);
     }
 
-    async fn send_list<T: Tunnel>(&self, game: &Game<T>, index: usize, count: usize) {
+    fn send_list<T: Tunnel>(&self, game: &Game<T>, index: usize, count: usize) {
         if self.change_state(SlideState::Unstarted, SlideState::List) {
             game.announce_with(|w, v| {
-                Some(OutgoingMessage::List {
-                    index,
-                    count,
-                    all_statements: self
-                        .answers
-                        .iter()
-                        .enumerate()
-                        .map(|(id, s)| Word {
-                            id,
-                            text: s.to_owned(),
-                        })
-                        .collect_vec(),
-                    assigned_statement: match v {
-                        WatcherValueKind::Host => Vec::new(),
-                        WatcherValueKind::Unassigned => Vec::new(),
-                        WatcherValueKind::Player => {
-                            let mut rng = fastrand::Rng::new();
-                            rng.seed(w.get_seed());
-                            rng.choose_multiple(0..self.answers.len(), self.board_size)
-                        }
-                    },
-                    crossed: self.crossed.iter().collect_vec(),
-                    user_votes: self.get_user_votes(),
-                })
-            })
-            .await;
+                Some(
+                    UpdateMessage::List {
+                        index,
+                        count,
+                        all_statements: self
+                            .answers
+                            .iter()
+                            .enumerate()
+                            .map(|(id, s)| Word {
+                                id,
+                                text: s.to_owned(),
+                            })
+                            .collect_vec(),
+                        assigned_statement: match v {
+                            ValueKind::Host | ValueKind::Unassigned => Vec::new(),
+                            ValueKind::Player => {
+                                let mut rng = fastrand::Rng::new();
+                                rng.seed(w.get_seed());
+                                rng.choose_multiple(0..self.answers.len(), self.board_size)
+                            }
+                        },
+                        crossed: self.crossed.iter().collect_vec(),
+                        user_votes: self.get_user_votes(),
+                    }
+                    .into(),
+                )
+            });
         }
     }
 
@@ -200,11 +183,11 @@ impl Slide {
     fn get_winners<T: Tunnel>(&self, game: &Game<T>) -> Vec<String> {
         self.get_winners_id(game)
             .into_iter()
-            .flat_map(|x| game.get_name(x))
+            .filter_map(|x| game.get_name(x))
             .collect_vec()
     }
 
-    fn get_winners_id<T: Tunnel>(&self, game: &Game<T>) -> Vec<WatcherId> {
+    fn get_winners_id<T: Tunnel>(&self, game: &Game<T>) -> Vec<Id> {
         game.players()
             .iter()
             .filter_map(|w| {
@@ -226,25 +209,27 @@ impl Slide {
             .collect_vec()
     }
 
-    async fn send_winners<T: Tunnel>(&self, game: &Game<T>) {
+    fn send_winners<T: Tunnel>(&self, game: &Game<T>) {
         if self.change_state(SlideState::List, SlideState::Winners) {
-            game.announce(OutgoingMessage::Winners {
-                winners: self.get_winners(game),
-            })
-            .await;
+            game.announce(
+                &UpdateMessage::Winners {
+                    winners: self.get_winners(game),
+                }
+                .into(),
+            );
         }
     }
 
     pub fn state_message<T: Tunnel>(
         &self,
-        watcher_id: WatcherId,
-        watcher_kind: WatcherValueKind,
+        watcher_id: Id,
+        watcher_kind: ValueKind,
         game: &Game<T>,
         index: usize,
         count: usize,
-    ) -> StateMessage {
+    ) -> SyncMessage {
         match self.state() {
-            SlideState::Unstarted | SlideState::List => StateMessage::List {
+            SlideState::Unstarted | SlideState::List => SyncMessage::List {
                 index,
                 count,
                 all_statements: self
@@ -257,9 +242,8 @@ impl Slide {
                     })
                     .collect_vec(),
                 assigned_statement: match watcher_kind {
-                    WatcherValueKind::Host => Vec::new(),
-                    WatcherValueKind::Unassigned => Vec::new(),
-                    WatcherValueKind::Player => {
+                    ValueKind::Host | ValueKind::Unassigned => Vec::new(),
+                    ValueKind::Player => {
                         let mut rng = fastrand::Rng::new();
                         rng.seed(watcher_id.get_seed());
                         rng.choose_multiple(0..self.answers.len(), self.board_size)
@@ -268,7 +252,7 @@ impl Slide {
                 crossed: self.crossed.iter().collect_vec(),
                 user_votes: self.get_user_votes(),
             },
-            SlideState::Winners => StateMessage::Winners {
+            SlideState::Winners => SyncMessage::Winners {
                 index,
                 count,
                 winners: self.get_winners(game),
@@ -286,49 +270,53 @@ impl Slide {
         user_votes
     }
 
-    pub async fn receive_message<T: Tunnel>(
+    pub fn receive_message<T: Tunnel>(
         &self,
         game: &Game<T>,
-        _fuiz: &FuizConfig,
-        watcher_id: WatcherId,
-        message: IncomingMessage,
+        _fuiz: &Fuiz,
+        watcher_id: Id,
+        message: &IncomingMessage,
         index: usize,
         count: usize,
     ) {
         match message {
             IncomingMessage::Host(host_message) => match host_message {
                 IncomingHostMessage::Next => match self.slide_state.load(Ordering::SeqCst) {
-                    SlideState::Unstarted => self.send_list(game, index, count).await,
-                    SlideState::List => self.send_winners(game).await,
+                    SlideState::Unstarted => self.send_list(game, index, count),
+                    SlideState::List => self.send_winners(game),
                     SlideState::Winners => {
                         for id in self.get_winners_id(game) {
                             game.leaderboard.add_score(id, self.points_awarded);
                         }
-                        game.finish_slide().await;
+                        game.finish_slide();
                     }
                 },
                 IncomingHostMessage::Index(u) => {
-                    self.crossed.insert(u);
+                    self.crossed.insert(*u);
                     let winners = self.get_winners(game);
-                    game.announce(OutgoingMessage::Cross {
-                        crossed: self.crossed.iter().collect_vec(),
-                    })
-                    .await;
+                    game.announce(
+                        &UpdateMessage::Cross {
+                            crossed: self.crossed.iter().collect_vec(),
+                        }
+                        .into(),
+                    );
                     if !winners.is_empty() {
-                        self.send_winners(game).await;
+                        self.send_winners(game);
                     }
                 }
             },
             IncomingMessage::Player(IncomingPlayerMessage::IndexAnswer(v)) => {
-                self.user_votes.modify_entry_or_default(v, |s| {
+                self.user_votes.modify_entry_or_default(*v, |s| {
                     s.insert(watcher_id);
                 });
-                game.announce(OutgoingMessage::Votes {
-                    user_votes: self.get_user_votes(),
-                })
-                .await;
+                game.announce(
+                    &UpdateMessage::Votes {
+                        user_votes: self.get_user_votes(),
+                    }
+                    .into(),
+                );
                 if !self.get_winners_id(game).is_empty() {
-                    self.send_winners(game).await;
+                    self.send_winners(game);
                 }
             }
             _ => (),

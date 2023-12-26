@@ -13,15 +13,14 @@ use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
 use crate::game_manager::{
-    game,
     session::Tunnel,
-    watcher::{WatcherId, WatcherValueKind},
+    watcher::{Id, ValueKind},
 };
 
 use super::{
     super::game::{Game, IncomingHostMessage, IncomingMessage, IncomingPlayerMessage},
-    config::FuizConfig,
-    media::{Media, TextOrMedia},
+    config::{Fuiz, TextOrMedia},
+    media::Media,
 };
 
 #[derive(Atom, Clone, Copy, Debug, Default)]
@@ -40,11 +39,12 @@ fn validate_duration<const MIN_SECONDS: u64, const MAX_SECONDS: u64>(
     field: &'static str,
     val: &Duration,
 ) -> ValidationResult {
-    match (MIN_SECONDS..=MAX_SECONDS).contains(&val.as_secs()) {
-        true => Ok(()),
-        false => Err(garde::Error::new(format!(
+    if (MIN_SECONDS..=MAX_SECONDS).contains(&val.as_secs()) {
+        Ok(())
+    } else {
+        Err(garde::Error::new(format!(
             "{field} is outside of the bounds [{MIN_SECONDS},{MAX_SECONDS}]",
-        ))),
+        )))
     }
 }
 
@@ -89,7 +89,7 @@ pub struct Slide {
 
     #[serde(skip)]
     #[garde(skip)]
-    user_answers: DashMap<WatcherId, (usize, Instant)>,
+    user_answers: DashMap<Id, (usize, Instant)>,
     #[serde(skip)]
     #[garde(skip)]
     answer_start: Arc<Mutex<Option<Instant>>>,
@@ -101,7 +101,7 @@ pub struct Slide {
 #[serde_with::serde_as]
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
-pub enum OutgoingMessage {
+pub enum UpdateMessage {
     QuestionAnnouncment {
         index: usize,
         count: usize,
@@ -121,16 +121,10 @@ pub enum OutgoingMessage {
     },
 }
 
-impl game::OutgoingMessage for OutgoingMessage {
-    fn identifier(&self) -> &'static str {
-        "MultipleChoice"
-    }
-}
-
 #[serde_with::serde_as]
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
-pub enum StateMessage {
+pub enum SyncMessage {
     QuestionAnnouncment {
         index: usize,
         count: usize,
@@ -159,12 +153,6 @@ pub enum StateMessage {
     },
 }
 
-impl game::StateMessage for StateMessage {
-    fn identifier(&self) -> &'static str {
-        "MultipleChoice"
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnswerChoice {
     pub correct: bool,
@@ -178,13 +166,7 @@ pub struct AnswerChoiceResult {
 }
 
 impl Slide {
-    pub async fn play<T: Tunnel>(
-        &self,
-        game: &Game<T>,
-        _fuiz: &FuizConfig,
-        index: usize,
-        count: usize,
-    ) {
+    pub async fn play<T: Tunnel>(&self, game: &Game<T>, _fuiz: &Fuiz, index: usize, count: usize) {
         self.send_question_announcements(game, index, count).await;
     }
 
@@ -193,9 +175,9 @@ impl Slide {
         taken_duration: Duration,
         full_points_awarded: u64,
     ) -> u64 {
-        full_points_awarded
-            - ((taken_duration.as_millis() / 2 * (full_points_awarded as u128)
-                / full_duration.as_millis()) as u64)
+        (full_points_awarded as f64
+            * (1. - (taken_duration.as_secs_f64() / full_duration.as_secs_f64() / 2.)))
+            as u64
     }
 
     fn start_timer(&self) {
@@ -221,14 +203,16 @@ impl Slide {
         if self.change_state(SlideState::Unstarted, SlideState::Question) {
             self.start_timer();
 
-            game.announce(OutgoingMessage::QuestionAnnouncment {
-                index,
-                count,
-                question: self.title.clone(),
-                media: self.media.clone(),
-                duration: self.introduce_question,
-            })
-            .await;
+            game.announce(
+                &UpdateMessage::QuestionAnnouncment {
+                    index,
+                    count,
+                    question: self.title.clone(),
+                    media: self.media.clone(),
+                    duration: self.introduce_question,
+                }
+                .into(),
+            );
 
             actix_web::rt::time::sleep(self.introduce_question).await;
 
@@ -240,19 +224,17 @@ impl Slide {
         if self.change_state(SlideState::Question, SlideState::Answers) {
             self.start_timer();
 
-            game.announce(OutgoingMessage::AnswersAnnouncement {
-                duration: self.time_limit,
-                answers: self
-                    .answers
-                    .iter()
-                    .map(|a| a.content.to_owned())
-                    .collect_vec(),
-            })
-            .await;
+            game.announce(
+                &UpdateMessage::AnswersAnnouncement {
+                    duration: self.time_limit,
+                    answers: self.answers.iter().map(|a| a.content.clone()).collect_vec(),
+                }
+                .into(),
+            );
 
             actix_web::rt::time::sleep(self.time_limit).await;
 
-            self.send_answers_results(game).await;
+            self.send_answers_results(game);
         }
     }
 
@@ -266,31 +248,33 @@ impl Slide {
         self.slide_state.load(Ordering::SeqCst)
     }
 
-    async fn send_answers_results<T: Tunnel>(&self, game: &Game<T>) {
+    fn send_answers_results<T: Tunnel>(&self, game: &Game<T>) {
         if self.change_state(SlideState::Answers, SlideState::AnswersResults) {
             let answer_count = self.user_answers.iter().map(|ua| ua.value().0).counts();
-            game.announce(OutgoingMessage::AnswersResults {
-                results: self
-                    .answers
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| AnswerChoiceResult {
-                        correct: a.correct,
-                        count: *answer_count.get(&i).unwrap_or(&0),
-                    })
-                    .collect_vec(),
-            })
-            .await;
+            game.announce(
+                &UpdateMessage::AnswersResults {
+                    results: self
+                        .answers
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| AnswerChoiceResult {
+                            correct: a.correct,
+                            count: *answer_count.get(&i).unwrap_or(&0),
+                        })
+                        .collect_vec(),
+                }
+                .into(),
+            );
         }
     }
 
     fn add_scores<T: Tunnel>(&self, game: &Game<T>) {
         let starting_instant = self.timer();
 
-        for ua in self.user_answers.iter() {
+        for ua in &self.user_answers {
             let id = ua.key();
             let (answer, instant) = *ua.value();
-            let correct = self.answers.get(answer).map(|x| x.correct).unwrap_or(false);
+            let correct = self.answers.get(answer).is_some_and(|x| x.correct);
             game.leaderboard.add_score(id.to_owned(), {
                 if correct {
                     Slide::calculate_score(
@@ -307,25 +291,25 @@ impl Slide {
 
     pub fn state_message<T: Tunnel>(
         &self,
-        _watcher_id: WatcherId,
-        _watcher_kind: WatcherValueKind,
+        _watcher_id: Id,
+        _watcher_kind: ValueKind,
         game: &Game<T>,
         index: usize,
         count: usize,
-    ) -> StateMessage {
+    ) -> SyncMessage {
         match self.state() {
-            SlideState::Unstarted | SlideState::Question => StateMessage::QuestionAnnouncment {
+            SlideState::Unstarted | SlideState::Question => SyncMessage::QuestionAnnouncment {
                 index,
                 count,
-                question: self.title.to_owned(),
-                media: self.media.to_owned(),
+                question: self.title.clone(),
+                media: self.media.clone(),
                 duration: self.introduce_question - self.timer().elapsed(),
             },
-            SlideState::Answers => StateMessage::AnswersAnnouncement {
+            SlideState::Answers => SyncMessage::AnswersAnnouncement {
                 index,
                 count,
-                question: self.title.to_owned(),
-                media: self.media.to_owned(),
+                question: self.title.clone(),
+                media: self.media.clone(),
                 duration: self.time_limit - self.timer().elapsed(),
                 answers: self
                     .answers
@@ -336,7 +320,7 @@ impl Slide {
                 answered_count: {
                     let left_set: HashSet<_> = game
                         .watchers
-                        .specific_vec(WatcherValueKind::Player)
+                        .specific_vec(ValueKind::Player)
                         .iter()
                         .map(|(w, _, _)| w.to_owned())
                         .collect();
@@ -351,11 +335,11 @@ impl Slide {
             SlideState::AnswersResults => {
                 let answer_count = self.user_answers.iter().map(|ua| ua.value().0).counts();
 
-                StateMessage::AnswersResults {
+                SyncMessage::AnswersResults {
                     index,
                     count,
-                    question: self.title.to_owned(),
-                    media: self.media.to_owned(),
+                    question: self.title.clone(),
+                    media: self.media.clone(),
                     answers: self.answers.iter().map(|a| a.content.clone()).collect_vec(),
                     results: self
                         .answers
@@ -374,8 +358,8 @@ impl Slide {
     pub async fn receive_message<T: Tunnel>(
         &self,
         game: &Game<T>,
-        _fuiz: &FuizConfig,
-        watcher_id: WatcherId,
+        _fuiz: &Fuiz,
+        watcher_id: Id,
         message: IncomingMessage,
         index: usize,
         count: usize,
@@ -384,13 +368,13 @@ impl Slide {
             IncomingMessage::Host(IncomingHostMessage::Next) => {
                 match self.slide_state.load(Ordering::SeqCst) {
                     SlideState::Unstarted => {
-                        self.send_question_announcements(game, index, count).await
+                        self.send_question_announcements(game, index, count).await;
                     }
                     SlideState::Question => self.send_answers_announcements(game).await,
-                    SlideState::Answers => self.send_answers_results(game).await,
+                    SlideState::Answers => self.send_answers_results(game),
                     SlideState::AnswersResults => {
                         self.add_scores(game);
-                        game.finish_slide().await;
+                        game.finish_slide();
                     }
                 }
             }
@@ -400,7 +384,7 @@ impl Slide {
                 self.user_answers.insert(watcher_id, (v, Instant::now()));
                 let left_set: HashSet<_> = game
                     .watchers
-                    .specific_vec(WatcherValueKind::Player)
+                    .specific_vec(ValueKind::Player)
                     .iter()
                     .map(|(w, _, _)| w.to_owned())
                     .collect();
@@ -410,12 +394,12 @@ impl Slide {
                     .map(|ua| ua.key().to_owned())
                     .collect();
                 if left_set.is_subset(&right_set) {
-                    self.send_answers_results(game).await;
+                    self.send_answers_results(game);
                 } else {
-                    game.announce_host(OutgoingMessage::AnswersCount(
-                        left_set.intersection(&right_set).count(),
-                    ))
-                    .await;
+                    game.announce_host(
+                        &UpdateMessage::AnswersCount(left_set.intersection(&right_set).count())
+                            .into(),
+                    );
                 }
             }
             _ => (),

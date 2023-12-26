@@ -21,11 +21,3 @@ pub enum Image {
         alt: String,
     },
 }
-
-const MAX_TEXT_LENGTH: usize = crate::CONFIG.fuiz.answer_text.max_length.unsigned_abs() as usize;
-
-#[derive(Debug, Serialize, Deserialize, Clone, Validate)]
-pub enum TextOrMedia {
-    Media(#[garde(skip)] Media),
-    Text(#[garde(length(max = MAX_TEXT_LENGTH))] String),
-}

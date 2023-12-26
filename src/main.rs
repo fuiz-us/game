@@ -3,11 +3,11 @@ mod clashset;
 mod game_manager;
 
 use crate::game_manager::{
-    fuiz::config::FuizConfig,
-    game::{GameOutgoingMessage, IncomingMessage, OutgoingMessage},
+    fuiz::config::Fuiz,
+    game::{IncomingMessage, UpdateMessage},
     game_id::GameId,
     session::Tunnel,
-    watcher::WatcherId,
+    watcher::Id,
     GameVanish,
 };
 use actix_web::{
@@ -52,10 +52,10 @@ struct AppState {
 // }
 
 #[post("/add")]
-async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Responder {
+async fn add(data: web::Data<AppState>, fuiz: web::Json<Fuiz>) -> impl Responder {
     let game_id = data.game_manager.add_game(fuiz.into_inner());
 
-    let host_id = WatcherId::new();
+    let host_id = Id::new();
 
     data.game_manager.reserve_host(game_id, host_id)?;
 
@@ -69,7 +69,7 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
                 Ok(true) => continue,
                 Ok(false) => {
                     info!("clearing, {}", game_id);
-                    stale_data.game_manager.remove_game(game_id).await;
+                    stale_data.game_manager.remove_game(game_id);
                 }
                 _ => break,
             }
@@ -92,6 +92,32 @@ async fn alive(data: web::Data<AppState>, game_id: web::Path<GameId>) -> impl Re
         .to_string()
 }
 
+fn websocket_heartbeat_verifier(mut session: actix_ws::Session) -> impl Fn(bytes::Bytes) -> bool {
+    let latest_value = Arc::new(AtomicU64::new(0));
+
+    let sender_latest_value = latest_value.clone();
+    actix_web::rt::spawn(async move {
+        loop {
+            actix_web::rt::time::sleep(std::time::Duration::from_secs(5)).await;
+            let new_value = fastrand::u64(0..u64::MAX);
+            sender_latest_value.store(new_value, atomig::Ordering::SeqCst);
+            if session.ping(&new_value.to_ne_bytes()).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    move |bytes: bytes::Bytes| {
+        let last_value = latest_value.load(atomig::Ordering::SeqCst);
+        if let Ok(actual_bytes) = bytes.into_iter().collect_vec().try_into() {
+            if u64::from_ne_bytes(actual_bytes) == last_value {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 #[get("/watch/{game_id}")]
 async fn watch(
     data: web::Data<AppState>,
@@ -107,25 +133,7 @@ async fn watch(
 
     let own_session = game_manager::session::Session::new(session.clone());
 
-    let mut heartbeat_session = session.clone();
-
-    let latest_value = Arc::new(AtomicU64::new(0));
-
-    let sender_latest_value = latest_value.clone();
-    actix_web::rt::spawn(async move {
-        loop {
-            actix_web::rt::time::sleep(std::time::Duration::from_secs(5)).await;
-            let new_value = fastrand::u64(0..u64::MAX);
-            sender_latest_value.store(new_value, atomig::Ordering::SeqCst);
-            if heartbeat_session
-                .ping(&new_value.to_ne_bytes())
-                .await
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
+    let mismatch = websocket_heartbeat_verifier(session.clone());
 
     let data_thread = data.clone();
 
@@ -138,13 +146,7 @@ async fn watch(
 
             match msg {
                 actix_ws::Message::Pong(bytes) => {
-                    let last_value = latest_value.load(atomig::Ordering::SeqCst);
-                    if let Ok(actual_bytes) = bytes.into_iter().collect_vec().try_into() {
-                        let value = u64::from_ne_bytes(actual_bytes);
-                        if last_value != value {
-                            break;
-                        }
-                    } else {
+                    if mismatch(bytes) {
                         break;
                     }
                 }
@@ -155,64 +157,56 @@ async fn watch(
                 }
                 actix_ws::Message::Text(s) => {
                     if let Ok(message) = serde_json::from_str(s.as_ref()) {
-                        match message {
-                            IncomingMessage::Ghost(IncomingGhostMessage::ClaimId(id))
-                                if matches!(
-                                    data_thread.game_manager.watcher_exists(game_id, id),
-                                    Ok(true)
-                                ) =>
-                            {
-                                if data_thread
-                                    .game_manager
-                                    .update_session(game_id, id, own_session.clone())
-                                    .await
-                                    .ok()
-                                    .and_then(std::result::Result::ok)
-                                    .is_none()
+                        match watcher_id {
+                            None => match message {
+                                IncomingMessage::Ghost(IncomingGhostMessage::ClaimId(id))
+                                    if matches!(
+                                        data_thread.game_manager.watcher_exists(game_id, id),
+                                        Ok(true)
+                                    ) =>
                                 {
-                                    break;
+                                    if data_thread
+                                        .game_manager
+                                        .update_session(game_id, id, own_session.clone())
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+
+                                    watcher_id = Some(id);
                                 }
+                                IncomingMessage::Ghost(_) => {
+                                    let new_id = Id::new();
+                                    watcher_id = Some(new_id);
 
-                                watcher_id = Some(id);
-                            }
-                            IncomingMessage::Ghost(_) => {
-                                let new_id = WatcherId::new();
-                                watcher_id = Some(new_id);
+                                    own_session
+                                        .send_message(&UpdateMessage::IdAssign(new_id).into());
 
-                                if own_session
-                                    .send(
-                                        &GameOutgoingMessage::IdAssign(new_id)
-                                            .to_message()
-                                            .expect("default serializer cannot fail"),
-                                    )
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                };
-
-                                if data_thread
-                                    .game_manager
-                                    .add_unassigned(game_id, new_id, own_session.clone())
-                                    .await
-                                    .ok()
-                                    .and_then(std::result::Result::ok)
-                                    .is_none()
-                                {
-                                    break;
-                                };
-                            }
-                            x => {
-                                if let Some(watcher_id) = watcher_id {
+                                    match data_thread.game_manager.add_unassigned(
+                                        game_id,
+                                        new_id,
+                                        own_session.clone(),
+                                    ) {
+                                        Err(_) | Ok(Err(_)) => {
+                                            own_session.clone().close();
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                _ => {}
+                            },
+                            Some(watcher_id) => match message {
+                                IncomingMessage::Ghost(_) => {}
+                                message => {
                                     let data_thread = data_thread.clone();
                                     actix_web::rt::spawn(async move {
                                         let _ = data_thread
                                             .game_manager
-                                            .receive_message(game_id, watcher_id, x)
+                                            .receive_message(game_id, watcher_id, message)
                                             .await;
                                     });
                                 }
-                            }
+                            },
                         }
                     }
                 }

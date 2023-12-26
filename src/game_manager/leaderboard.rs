@@ -7,14 +7,14 @@ use dashmap::{mapref::entry::Entry, DashMap};
 use itertools::Itertools;
 use serde::Serialize;
 
-use super::watcher::WatcherId;
+use super::watcher::Id;
 
-type Scores = Vec<(WatcherId, u64)>;
-type Positions = HashMap<WatcherId, usize>;
+type Scores = Vec<(Id, u64)>;
+type Positions = HashMap<Id, usize>;
 
 #[derive(Debug, Default)]
 pub struct Leaderboard {
-    mapping: DashMap<WatcherId, u64>,
+    mapping: DashMap<Id, u64>,
 
     invalidated: Arc<AtomicBool>,
     scores_descending: Arc<Mutex<Scores>>,
@@ -28,7 +28,7 @@ pub struct ScoreMessage {
 }
 
 #[derive(Debug, Serialize, Clone)]
-pub struct LeaderboardMessage {
+pub struct Message {
     pub exact_count: usize,
     pub points: Vec<(String, u64)>,
 }
@@ -74,7 +74,7 @@ impl Leaderboard {
         self.invalidated.store(false, atomig::Ordering::SeqCst);
     }
 
-    pub fn add_score(&self, player: WatcherId, score: u64) {
+    pub fn add_score(&self, player: Id, score: u64) {
         self.invalidate_cache();
 
         match self.mapping.entry(player) {
@@ -88,7 +88,7 @@ impl Leaderboard {
         };
     }
 
-    pub fn _remove_player(&self, player: WatcherId) {
+    pub fn _remove_player(&self, player: Id) {
         self.mapping.remove(&player);
     }
 
@@ -102,10 +102,10 @@ impl Leaderboard {
             .lock()
             .expect("Program must not panic");
 
-        (scores.len(), scores.iter().take(50).cloned().collect_vec())
+        (scores.len(), scores.iter().take(50).copied().collect_vec())
     }
 
-    pub fn score(&self, watcher_id: WatcherId) -> Option<ScoreMessage> {
+    pub fn score(&self, watcher_id: Id) -> Option<ScoreMessage> {
         if self.invalidated.load(atomig::Ordering::SeqCst) {
             self.update_cache();
         }
@@ -116,7 +116,7 @@ impl Leaderboard {
             .expect("Program must not panic");
 
         positions.get(&watcher_id).map(|&position| ScoreMessage {
-            points: self.mapping.get(&watcher_id).map(|x| *x).unwrap_or(0),
+            points: self.mapping.get(&watcher_id).map_or(0, |x| *x),
             position,
         })
     }

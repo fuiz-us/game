@@ -3,8 +3,8 @@ use std::{fmt::Display, num::ParseIntError, str::FromStr};
 use enum_map::{Enum, EnumArray};
 use serde::{Deserialize, Deserializer, Serialize};
 
-const MIN_VALUE: u16 = 0o10000;
-const MAX_VALUE: u16 = 0o100000;
+const MIN_VALUE: u16 = 0o10_000;
+const MAX_VALUE: u16 = 0o100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GameId(u16);

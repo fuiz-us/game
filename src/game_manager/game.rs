@@ -4,71 +4,48 @@ use std::{
 };
 
 use actix_web::rt::time::Instant;
-use erased_serde::serialize_trait_object;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
-use crate::game_manager::watcher::WatcherValue;
+use crate::game_manager::watcher::Value;
 
 use super::{
-    fuiz::config::FuizConfig,
-    leaderboard::{Leaderboard, LeaderboardMessage, ScoreMessage},
-    names::{Names, NamesError},
-    session::{Closed, Tunnel},
-    watcher::{WatcherError, WatcherId, WatcherValueKind, Watchers},
+    fuiz::config::Fuiz,
+    leaderboard::{Leaderboard, Message, ScoreMessage},
+    names::{self, Names},
+    session::Tunnel,
+    watcher::{self, Id, ValueKind, Watchers},
 };
 
 #[derive(Debug, Clone, Copy)]
-pub enum GameState {
+pub enum State {
     WaitingScreen,
     Slide { index: usize, finished: bool },
     Done,
 }
 
-impl GameState {
+impl State {
     pub fn is_done(&self) -> bool {
-        matches!(self, GameState::Done)
+        matches!(self, State::Done)
     }
 }
 
 pub struct Game<T: Tunnel> {
-    pub fuiz_config: FuizConfig,
+    fuiz_config: Fuiz,
     pub watchers: Watchers<T>,
-    pub names: Names,
+    names: Names,
     pub leaderboard: Leaderboard,
-    pub state: Arc<Mutex<GameState>>,
-    pub updated: Arc<Mutex<Instant>>,
+    state: Arc<Mutex<State>>,
+    updated: Arc<Mutex<Instant>>,
 }
 
 impl<T: Tunnel> Debug for Game<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Game")
             .field("fuiz", &self.fuiz_config)
-            .finish()
+            .finish_non_exhaustive()
     }
-}
-
-pub trait OutgoingMessage: Serialize + Clone {
-    fn identifier(&self) -> &'static str;
-
-    fn to_message(&self) -> Result<String, serde_json::Error> {
-        Ok(format!(
-            "{{\"{}\":{}}}",
-            self.identifier(),
-            serde_json::to_string(self)?
-        ))
-    }
-}
-
-pub trait StateMessage: erased_serde::Serialize {
-    fn identifier(&self) -> &'static str;
-}
-
-serialize_trait_object!(StateMessage);
-
-pub trait StateMessageSend {
-    fn to_message(&self) -> Result<String, serde_json::Error>;
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -80,12 +57,12 @@ pub enum IncomingMessage {
 }
 
 impl IncomingMessage {
-    fn follows(&self, sender_kind: &WatcherValueKind) -> bool {
+    fn follows(&self, sender_kind: ValueKind) -> bool {
         matches!(
             (self, sender_kind),
-            (IncomingMessage::Host(_), WatcherValueKind::Host)
-                | (IncomingMessage::Player(_), WatcherValueKind::Player)
-                | (IncomingMessage::Unassigned(_), WatcherValueKind::Unassigned)
+            (IncomingMessage::Host(_), ValueKind::Host)
+                | (IncomingMessage::Player(_), ValueKind::Player)
+                | (IncomingMessage::Unassigned(_), ValueKind::Unassigned)
         )
     }
 }
@@ -103,7 +80,7 @@ pub enum IncomingUnassignedMessage {
 #[derive(Debug, Deserialize, Clone)]
 pub enum IncomingGhostMessage {
     DemandId,
-    ClaimId(WatcherId),
+    ClaimId(Id),
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -114,13 +91,13 @@ pub enum IncomingHostMessage {
 
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
-pub enum GameOutgoingMessage {
-    IdAssign(WatcherId),
+pub enum UpdateMessage {
+    IdAssign(Id),
     WaitingScreen(WaitingScreenMessage),
     NameChoose,
     NameAssign(String),
-    NameError(NamesError),
-    Leaderboard { leaderboard: LeaderboardMessage },
+    NameError(names::Error),
+    Leaderboard { leaderboard: Message },
     Score { score: Option<ScoreMessage> },
 }
 
@@ -131,19 +108,13 @@ pub struct WaitingScreenMessage {
     truncated: bool,
 }
 
-impl OutgoingMessage for GameOutgoingMessage {
-    fn identifier(&self) -> &'static str {
-        "Game"
-    }
-}
-
 #[derive(Debug, Serialize, Clone)]
-pub enum GameStateMessage {
+pub enum SyncMessage {
     WaitingScreen(WaitingScreenMessage),
     Leaderboard {
         index: usize,
         count: usize,
-        leaderboard: LeaderboardMessage,
+        leaderboard: Message,
     },
     Score {
         index: usize,
@@ -152,69 +123,53 @@ pub enum GameStateMessage {
     },
 }
 
-impl StateMessage for GameStateMessage {
-    fn identifier(&self) -> &'static str {
-        "Game"
-    }
-}
-
-impl StateMessageSend for Box<dyn StateMessage> {
-    fn to_message(&self) -> Result<String, serde_json::Error> {
-        Ok(format!(
-            "{{\"{}\":{}}}",
-            self.identifier(),
-            serde_json::to_string(self)?
-        ))
-    }
-}
-
 impl<T: Tunnel> Game<T> {
-    pub fn new(fuiz: FuizConfig) -> Self {
+    pub fn new(fuiz: Fuiz) -> Self {
         Self {
             fuiz_config: fuiz,
             watchers: Watchers::default(),
             names: Names::default(),
             leaderboard: Leaderboard::default(),
-            state: Arc::new(Mutex::new(GameState::WaitingScreen)),
+            state: Arc::new(Mutex::new(State::WaitingScreen)),
             updated: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
     pub async fn play(&self) {
-        self.change_state(GameState::Slide {
+        self.change_state(State::Slide {
             index: 0,
             finished: false,
         });
         self.fuiz_config.play_slide(self, 0).await;
     }
 
-    pub async fn finish_slide(&self) {
-        if let GameState::Slide {
+    pub fn finish_slide(&self) {
+        if let State::Slide {
             index,
             finished: false,
         } = self.state()
         {
-            self.change_state(GameState::Slide {
+            self.change_state(State::Slide {
                 index,
                 finished: true,
             });
 
-            self.announce_leaderboard().await;
+            self.announce_leaderboard();
         }
     }
 
-    pub fn change_state(&self, game_state: GameState) {
+    pub fn change_state(&self, game_state: State) {
         if let Ok(mut state) = self.state.lock() {
             *state = game_state;
         }
         self.update();
     }
 
-    pub fn state(&self) -> GameState {
+    pub fn state(&self) -> State {
         if let Ok(state) = self.state.lock() {
             *state
         } else {
-            GameState::Done
+            State::Done
         }
     }
 
@@ -232,10 +187,10 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    pub fn leaderboard_message(&self) -> LeaderboardMessage {
+    pub fn leaderboard_message(&self) -> Message {
         let (exact_count, points) = self.leaderboard.get_scores_truncated();
 
-        LeaderboardMessage {
+        Message {
             exact_count,
             points: points
                 .into_iter()
@@ -244,129 +199,87 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    pub fn score(&self, watcher_id: WatcherId) -> Option<ScoreMessage> {
+    pub fn score(&self, watcher_id: Id) -> Option<ScoreMessage> {
         self.leaderboard.score(watcher_id)
     }
 
-    pub async fn announce_leaderboard(&self) {
+    pub fn announce_leaderboard(&self) {
         let leaderboard_message = self.leaderboard_message();
 
         self.announce_with(|watcher_id, watcher_kind| {
             Some(match watcher_kind {
-                WatcherValueKind::Host | WatcherValueKind::Unassigned => {
-                    GameOutgoingMessage::Leaderboard {
-                        leaderboard: leaderboard_message.clone(),
-                    }
+                ValueKind::Host | ValueKind::Unassigned => UpdateMessage::Leaderboard {
+                    leaderboard: leaderboard_message.clone(),
                 }
-                WatcherValueKind::Player => GameOutgoingMessage::Score {
+                .into(),
+                ValueKind::Player => UpdateMessage::Score {
                     score: self.score(watcher_id),
-                },
+                }
+                .into(),
             })
-        })
-        .await;
+        });
     }
 
-    pub async fn announce<O: OutgoingMessage>(&self, message: O) {
-        let serialized_message = message
-            .to_message()
-            .expect("default enum serializer failed");
-
-        let mut watchers_to_be_removed = Vec::new();
-
-        for (watcher, session, _) in self.watchers.vec() {
-            if session.send(&serialized_message).await.is_err() {
-                watchers_to_be_removed.push(watcher);
-            }
-        }
-
-        for watcher in watchers_to_be_removed {
-            self.remove_watcher_session(watcher);
+    pub fn announce(&self, message: &super::UpdateMessage) {
+        for (_, session, _) in self.watchers.vec() {
+            session.send_message(message);
         }
     }
 
-    pub fn get_name(&self, watcher_id: WatcherId) -> Option<String> {
+    pub fn get_name(&self, watcher_id: Id) -> Option<String> {
         self.watchers
             .get_watcher_value(watcher_id)
             .and_then(|v| match v {
-                WatcherValue::Player(x) => Some(x),
+                Value::Player(x) => Some(x),
                 _ => None,
             })
     }
 
-    pub async fn announce_with<O, F>(&self, sender: F)
+    pub fn announce_with<F>(&self, sender: F)
     where
-        O: OutgoingMessage,
-        F: Fn(WatcherId, WatcherValueKind) -> Option<O>,
+        F: Fn(Id, ValueKind) -> Option<super::UpdateMessage>,
     {
-        let mut watchers_to_be_removed = Vec::new();
-
         for (watcher, session, v) in self.watchers.vec() {
             let Some(message) = sender(watcher, v.kind()) else {
                 continue;
             };
 
-            let Ok(serialized_message) = message.to_message() else {
-                continue;
-            };
-
-            if session.send(&serialized_message).await.is_err() {
-                watchers_to_be_removed.push(watcher);
-            }
-        }
-
-        for watcher in watchers_to_be_removed {
-            self.remove_watcher_session(watcher);
+            session.send_message(&message);
         }
     }
 
-    pub async fn announce_host<O: OutgoingMessage>(&self, message: O) {
-        let serialized_message = message
-            .to_message()
-            .expect("default enum serializer failed");
-
-        let mut watchers_to_be_removed = Vec::new();
-
-        for (watcher, session, _) in self.watchers.specific_vec(WatcherValueKind::Host) {
-            if session.send(&serialized_message).await.is_err() {
-                watchers_to_be_removed.push(watcher);
-            }
-        }
-
-        for watcher in watchers_to_be_removed {
-            self.remove_watcher_session(watcher);
+    pub fn announce_host(&self, message: &super::UpdateMessage) {
+        for (_, session, _) in self.watchers.specific_vec(ValueKind::Host) {
+            session.send_message(message);
         }
     }
 
-    pub fn players(&self) -> Vec<WatcherId> {
+    pub fn players(&self) -> Vec<Id> {
         self.watchers
-            .specific_vec(WatcherValueKind::Player)
+            .specific_vec(ValueKind::Player)
             .into_iter()
             .map(|(x, _, _)| x)
             .collect_vec()
     }
 
-    pub async fn send<O: OutgoingMessage>(&self, message: O, watcher_id: WatcherId) {
-        let serialized_message = message
-            .to_message()
-            .expect("default enum serializer failed");
-
-        self.watchers.send(&serialized_message, watcher_id).await;
+    pub fn send(&self, message: &super::UpdateMessage, watcher_id: Id) {
+        self.watchers.send_message(message, watcher_id);
     }
 
     pub fn mark_as_done(&self) {
-        self.change_state(GameState::Done);
+        self.change_state(State::Done);
         let watchers = self.watchers.vec().iter().map(|(x, _, _)| *x).collect_vec();
         for watcher in watchers {
             self.remove_watcher_session(watcher);
         }
     }
 
-    pub async fn receive_message(&self, watcher_id: WatcherId, message: IncomingMessage) {
+    pub async fn receive_message(&self, watcher_id: Id, message: IncomingMessage) {
         let Some(watcher_value) = self.watchers.get_watcher_value(watcher_id) else {
             return;
         };
 
-        if !message.follows(&watcher_value.kind()) {
+        if !message.follows(watcher_value.kind()) {
             return;
         }
 
@@ -374,56 +287,55 @@ impl<T: Tunnel> Game<T> {
 
         match message {
             IncomingMessage::Unassigned(IncomingUnassignedMessage::NameRequest(s)) => {
-                match self.names.set_name(watcher_id, s) {
+                match self.names.set_name(watcher_id, &s) {
                     Ok(resulting_name) => {
                         self.watchers.update_watcher_value(
                             watcher_id,
-                            WatcherValue::Player(resulting_name.clone()),
+                            Value::Player(resulting_name.clone()),
                         );
-                        self.send(GameOutgoingMessage::NameAssign(resulting_name), watcher_id)
-                            .await;
+                        self.send(
+                            &UpdateMessage::NameAssign(resulting_name).into(),
+                            watcher_id,
+                        );
 
-                        self.announce_waiting().await;
+                        self.announce_waiting();
 
                         self.send(
-                            GameOutgoingMessage::WaitingScreen(self.get_waiting_message()),
+                            &UpdateMessage::WaitingScreen(self.get_waiting_message()).into(),
                             watcher_id,
-                        )
-                        .await;
+                        );
                     }
                     Err(e) => {
-                        self.send(GameOutgoingMessage::NameError(e), watcher_id)
-                            .await;
+                        self.send(&UpdateMessage::NameError(e).into(), watcher_id);
                     }
                 }
             }
             message => match self.state() {
-                GameState::WaitingScreen => {
+                State::WaitingScreen => {
                     if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
                         self.play().await;
                     }
                 }
-                GameState::Slide { index, finished } => match finished {
-                    false => {
-                        self.fuiz_config
-                            .receive_message(self, watcher_id, message, index)
-                            .await
-                    }
-                    true => {
+                State::Slide { index, finished } => {
+                    if finished {
                         if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
                             if index + 1 >= self.fuiz_config.len() {
-                                self.change_state(GameState::Done)
+                                self.change_state(State::Done);
                             } else {
-                                self.change_state(GameState::Slide {
+                                self.change_state(State::Slide {
                                     index: index + 1,
                                     finished: false,
                                 });
                                 self.fuiz_config.play_slide(self, index + 1).await;
                             }
                         }
+                    } else {
+                        self.fuiz_config
+                            .receive_message(self, watcher_id, message, index)
+                            .await;
                     }
-                },
-                GameState::Done => {
+                }
+                State::Done => {
                     if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
                         self.mark_as_done();
                     }
@@ -434,10 +346,10 @@ impl<T: Tunnel> Game<T> {
 
     fn get_names(&self) -> Vec<String> {
         self.watchers
-            .specific_vec(WatcherValueKind::Player)
+            .specific_vec(ValueKind::Player)
             .into_iter()
             .filter_map(|(_, _, x)| match x {
-                WatcherValue::Player(s) => Some(s.to_owned()),
+                Value::Player(s) => Some(s),
                 _ => None,
             })
             .collect_vec()
@@ -445,66 +357,62 @@ impl<T: Tunnel> Game<T> {
 
     fn get_names_limited(&self, limit: usize) -> Vec<String> {
         self.watchers
-            .specific_vec(WatcherValueKind::Player)
+            .specific_vec(ValueKind::Player)
             .into_iter()
             .take(limit)
             .filter_map(|(_, _, x)| match x {
-                WatcherValue::Player(s) => Some(s.to_owned()),
+                Value::Player(s) => Some(s),
                 _ => None,
             })
             .collect_vec()
     }
 
-    pub fn state_message(
-        &self,
-        watcher_id: WatcherId,
-        watcher_kind: WatcherValueKind,
-    ) -> Box<dyn StateMessage> {
+    pub fn state_message(&self, watcher_id: Id, watcher_kind: ValueKind) -> super::SyncMessage {
         match self.state() {
-            GameState::WaitingScreen => {
-                Box::new(GameStateMessage::WaitingScreen(self.get_waiting_message()))
-            }
-            GameState::Slide { index, finished } => match finished {
-                false => self
-                    .fuiz_config
-                    .state_message(watcher_id, watcher_kind, self, index)
-                    .expect("Index was violated"),
-                true => Box::new(match watcher_kind {
-                    WatcherValueKind::Host | WatcherValueKind::Unassigned => {
-                        GameStateMessage::Leaderboard {
+            State::WaitingScreen => SyncMessage::WaitingScreen(self.get_waiting_message()).into(),
+            State::Slide { index, finished } => {
+                if finished {
+                    match watcher_kind {
+                        ValueKind::Host | ValueKind::Unassigned => SyncMessage::Leaderboard {
                             index,
                             count: self.fuiz_config.len(),
                             leaderboard: self.leaderboard_message(),
                         }
+                        .into(),
+                        ValueKind::Player => SyncMessage::Score {
+                            index,
+                            count: self.fuiz_config.len(),
+                            score: self.score(watcher_id),
+                        }
+                        .into(),
                     }
-                    WatcherValueKind::Player => GameStateMessage::Score {
-                        index,
-                        count: self.fuiz_config.len(),
-                        score: self.score(watcher_id),
-                    },
-                }),
-            },
-            GameState::Done => Box::new(match watcher_kind {
-                WatcherValueKind::Host | WatcherValueKind::Unassigned => {
-                    GameStateMessage::Leaderboard {
-                        index: self.fuiz_config.len() - 1,
-                        count: self.fuiz_config.len(),
-                        leaderboard: self.leaderboard_message(),
-                    }
+                } else {
+                    self.fuiz_config
+                        .state_message(watcher_id, watcher_kind, self, index)
+                        .expect("Index was violated")
                 }
-                WatcherValueKind::Player => GameStateMessage::Score {
+            }
+            State::Done => match watcher_kind {
+                ValueKind::Host | ValueKind::Unassigned => SyncMessage::Leaderboard {
+                    index: self.fuiz_config.len() - 1,
+                    count: self.fuiz_config.len(),
+                    leaderboard: self.leaderboard_message(),
+                }
+                .into(),
+                ValueKind::Player => SyncMessage::Score {
                     index: self.fuiz_config.len() - 1,
                     count: self.fuiz_config.len(),
                     score: self.score(watcher_id),
-                },
-            }),
+                }
+                .into(),
+            },
         }
     }
 
     pub fn get_waiting_message(&self) -> WaitingScreenMessage {
-        let exact_count = self.watchers.specific_count(WatcherValueKind::Player);
-
         const LIMIT: usize = 50;
+
+        let exact_count = self.watchers.specific_count(ValueKind::Player);
 
         if exact_count < LIMIT {
             let names = self.get_names();
@@ -523,84 +431,51 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    pub async fn announce_waiting(&self) {
-        if let GameState::WaitingScreen = self.state() {
-            self.announce_host(GameOutgoingMessage::WaitingScreen(
-                self.get_waiting_message(),
-            ))
-            .await;
+    pub fn announce_waiting(&self) {
+        if let State::WaitingScreen = self.state() {
+            self.announce_host(&UpdateMessage::WaitingScreen(self.get_waiting_message()).into());
         }
     }
 
-    pub async fn add_unassigned(&self, watcher: WatcherId, session: T) -> Result<(), WatcherError> {
+    pub fn add_unassigned(&self, watcher: Id, session: T) -> Result<(), watcher::Error> {
         self.watchers
-            .add_watcher(watcher, WatcherValue::Unassigned, session)
-            .await?;
+            .add_watcher(watcher, Value::Unassigned, session)?;
 
-        self.send(GameOutgoingMessage::NameChoose, watcher).await;
+        self.send(&UpdateMessage::NameChoose.into(), watcher);
 
         Ok(())
     }
 
-    pub fn reserve_host(&self, watcher: WatcherId) {
-        self.watchers.reserve_watcher(watcher, WatcherValue::Host);
+    pub fn reserve_host(&self, watcher: Id) {
+        self.watchers.reserve_watcher(watcher, Value::Host);
     }
 
-    pub async fn update_session(&self, watcher_id: WatcherId, session: T) -> Result<(), Closed> {
+    pub fn update_session(&self, watcher_id: Id, session: T) {
         let Some(watcher_value) = self.watchers.get_watcher_value(watcher_id) else {
-            return Ok(());
+            return;
         };
 
         match watcher_value.clone() {
-            WatcherValue::Host => {
-                session
-                    .send(
-                        &self
-                            .state_message(watcher_id, watcher_value.kind())
-                            .to_message()
-                            .expect("default serializer shouldn't fail"),
-                    )
-                    .await?;
+            Value::Host => {
+                session.send_state(&self.state_message(watcher_id, watcher_value.kind()));
             }
-            WatcherValue::Player(name) => {
-                session
-                    .send(
-                        &GameOutgoingMessage::NameAssign(name)
-                            .to_message()
-                            .expect("Serializer should never fail"),
-                    )
-                    .await?;
-
-                session
-                    .send(
-                        &self
-                            .state_message(watcher_id, watcher_value.kind())
-                            .to_message()
-                            .expect("default serializer shouldn't fail"),
-                    )
-                    .await?;
+            Value::Player(name) => {
+                session.send_message(&UpdateMessage::NameAssign(name).into());
+                session.send_state(&self.state_message(watcher_id, watcher_value.kind()));
             }
-            WatcherValue::Unassigned => {
-                session
-                    .send(
-                        &GameOutgoingMessage::NameChoose
-                            .to_message()
-                            .expect("Serializer should never fail"),
-                    )
-                    .await?;
+            Value::Unassigned => {
+                session.send_message(&UpdateMessage::NameChoose.into());
             }
         }
 
         self.watchers.update_watcher_session(watcher_id, session);
-
-        Ok(())
     }
 
-    pub fn has_watcher(&self, watcher_id: WatcherId) -> bool {
+    pub fn has_watcher(&self, watcher_id: Id) -> bool {
         self.watchers.has_watcher(watcher_id)
     }
 
-    pub fn remove_watcher_session(&self, watcher: WatcherId) {
+    pub fn remove_watcher_session(&self, watcher: Id) {
         self.watchers.remove_watcher_session(&watcher);
     }
 }

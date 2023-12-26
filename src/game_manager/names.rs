@@ -4,16 +4,16 @@ use thiserror::Error;
 
 use crate::{clashmap::ClashMap, clashset::ClashSet};
 
-use super::watcher::WatcherId;
+use super::watcher::Id;
 
 #[derive(Debug, Default, Clone)]
 pub struct Names {
-    mapping: ClashMap<WatcherId, String>,
+    mapping: ClashMap<Id, String>,
     existing_names: ClashSet<String>,
 }
 
 #[derive(Error, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NamesError {
+pub enum Error {
     #[error("name already in-use")]
     Used,
     #[error("player has an existing name")]
@@ -26,31 +26,31 @@ pub enum NamesError {
     TooLong,
 }
 
-impl actix_web::error::ResponseError for NamesError {}
+impl actix_web::error::ResponseError for Error {}
 
 impl Names {
-    pub fn get_name(&self, id: &WatcherId) -> Option<String> {
+    pub fn get_name(&self, id: &Id) -> Option<String> {
         self.mapping.get(id)
     }
 
-    pub fn set_name(&self, id: WatcherId, name: String) -> Result<String, NamesError> {
+    pub fn set_name(&self, id: Id, name: &str) -> Result<String, Error> {
         if name.len() > 30 {
-            return Err(NamesError::TooLong);
+            return Err(Error::TooLong);
         }
-        let name = rustrict::trim_whitespace(&name);
+        let name = rustrict::trim_whitespace(name);
         if name.is_empty() {
-            return Err(NamesError::Empty);
+            return Err(Error::Empty);
         }
         if name.is_inappropriate() {
-            return Err(NamesError::Sinful);
+            return Err(Error::Sinful);
         }
         if !self.existing_names.insert(name.to_owned()) {
-            return Err(NamesError::Used);
+            return Err(Error::Used);
         }
         match self.mapping.insert_if_vacant(id, name.to_owned()) {
             Some(_) => {
                 self.existing_names.remove(name);
-                Err(NamesError::Assigned)
+                Err(Error::Assigned)
             }
             None => Ok(name.to_owned()),
         }
