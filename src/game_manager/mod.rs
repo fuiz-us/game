@@ -27,8 +27,8 @@ impl<T: Tunnel> SharedGame<T> {
         RwLockReadGuard::try_map(self.0.read(), |x| x.as_ref())
             .ok()
             .and_then(|x| match x.state().is_done() {
-                true => Some(MappedRwLockReadGuard::map(x, unbox_box::BoxExt::unbox_ref)),
-                false => None,
+                false => Some(MappedRwLockReadGuard::map(x, unbox_box::BoxExt::unbox_ref)),
+                true => None,
             })
     }
 }

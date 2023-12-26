@@ -73,6 +73,7 @@ pub trait StateMessageSend {
 
 #[derive(Debug, Deserialize, Clone)]
 pub enum IncomingMessage {
+    Ghost(IncomingGhostMessage),
     Host(IncomingHostMessage),
     Unassigned(IncomingUnassignedMessage),
     Player(IncomingPlayerMessage),
@@ -99,6 +100,12 @@ pub enum IncomingUnassignedMessage {
     NameRequest(String),
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub enum IncomingGhostMessage {
+    DemandId,
+    ClaimId(WatcherId),
+}
+
 #[derive(Debug, Deserialize, Clone, Copy)]
 pub enum IncomingHostMessage {
     Next,
@@ -108,6 +115,7 @@ pub enum IncomingHostMessage {
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
 pub enum GameOutgoingMessage {
+    IdAssign(WatcherId),
     WaitingScreen(WaitingScreenMessage),
     NameChoose,
     NameAssign(String),
@@ -584,8 +592,6 @@ impl<T: Tunnel> Game<T> {
         }
 
         self.watchers.update_watcher_session(watcher_id, session);
-
-        self.announce_waiting().await;
 
         Ok(())
     }

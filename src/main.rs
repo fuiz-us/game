@@ -3,21 +3,20 @@ mod clashset;
 mod game_manager;
 
 use crate::game_manager::{
-    fuiz::config::FuizConfig, game_id::GameId, watcher::WatcherId, GameVanish,
+    fuiz::config::FuizConfig,
+    game::{GameOutgoingMessage, IncomingMessage, OutgoingMessage},
+    game_id::GameId,
+    session::Tunnel,
+    watcher::WatcherId,
+    GameVanish,
 };
 use actix_web::{
-    cookie::{Cookie, CookieBuilder},
-    get,
-    middleware::Logger,
-    post, web, App, HttpRequest, HttpResponse, HttpServer, Responder,
+    get, middleware::Logger, post, web, App, HttpRequest, HttpResponse, HttpServer, Responder,
 };
 use futures_util::StreamExt;
-use game_manager::{session::Session, GameManager};
+use game_manager::{game::IncomingGhostMessage, session::Session, GameManager};
 use itertools::Itertools;
-use std::{
-    str::FromStr,
-    sync::{atomic::AtomicU64, Arc},
-};
+use std::sync::{atomic::AtomicU64, Arc};
 
 extern crate pretty_env_logger;
 #[macro_use]
@@ -34,29 +33,29 @@ struct AppState {
     game_manager: GameManager<Session>,
 }
 
-fn configure_cookie(cookie: CookieBuilder) -> Cookie {
-    if cfg!(feature = "https") {
-        cookie
-            .same_site(actix_web::cookie::SameSite::None)
-            .secure(true)
-            .path("/")
-            .http_only(true)
-            .finish()
-    } else {
-        cookie
-            .same_site(actix_web::cookie::SameSite::Lax)
-            .secure(false)
-            .path("/")
-            .http_only(true)
-            .finish()
-    }
-}
+// fn configure_cookie(cookie: CookieBuilder) -> Cookie {
+//     if cfg!(feature = "https") {
+//         cookie
+//             .same_site(actix_web::cookie::SameSite::None)
+//             .secure(true)
+//             .path("/")
+//             .http_only(true)
+//             .finish()
+//     } else {
+//         cookie
+//             .same_site(actix_web::cookie::SameSite::Lax)
+//             .secure(false)
+//             .path("/")
+//             .http_only(true)
+//             .finish()
+//     }
+// }
 
 #[post("/add")]
 async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Responder {
     let game_id = data.game_manager.add_game(fuiz.into_inner());
 
-    let host_id = WatcherId::default();
+    let host_id = WatcherId::new();
 
     data.game_manager.reserve_host(game_id, host_id)?;
 
@@ -77,9 +76,12 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<FuizConfig>) -> impl Res
         }
     });
 
-    let cookie = configure_cookie(CookieBuilder::new("wid", host_id.to_string()));
+    // let cookie = configure_cookie(CookieBuilder::new("wid", host_id.to_string()));
 
-    Ok::<_, GameVanish>(HttpResponse::Ok().cookie(cookie).body(game_id.to_string()))
+    Ok::<_, GameVanish>(web::Json(serde_json::json!({
+        "game_id": game_id,
+        "watcher_id": host_id
+    })))
 }
 
 #[get("/alive/{game_id}")]
@@ -97,37 +99,13 @@ async fn watch(
     body: web::Payload,
     game_id: web::Path<GameId>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let (mut response, mut session, mut msg_stream) = actix_ws::handle(&req, body)?;
+    let (response, mut session, mut msg_stream) = actix_ws::handle(&req, body)?;
 
     let game_id = *game_id;
 
     data.game_manager.exists(game_id)?;
 
     let own_session = game_manager::session::Session::new(session.clone());
-
-    let watcher_id = match req.cookie("wid").map(|x| WatcherId::from_str(x.value())) {
-        Some(Ok(watcher_id)) if data.game_manager.watcher_exists(game_id, watcher_id)? => {
-            data.game_manager
-                .update_session(game_id, watcher_id, own_session)
-                .await??;
-
-            watcher_id
-        }
-        _ => {
-            let watcher_id = WatcherId::default();
-
-            response.add_cookie(&configure_cookie(CookieBuilder::new(
-                "wid",
-                watcher_id.to_string(),
-            )))?;
-
-            data.game_manager
-                .add_unassigned(game_id, watcher_id, own_session)
-                .await??;
-
-            watcher_id
-        }
-    };
 
     let mut heartbeat_session = session.clone();
 
@@ -152,8 +130,9 @@ async fn watch(
     let data_thread = data.clone();
 
     actix_web::rt::spawn(async move {
+        let mut watcher_id = None;
         while let Some(Ok(msg)) = msg_stream.next().await {
-            if data.game_manager.exists(game_id).is_ok() {
+            if data.game_manager.exists(game_id).is_err() {
                 break;
             }
 
@@ -176,22 +155,75 @@ async fn watch(
                 }
                 actix_ws::Message::Text(s) => {
                     if let Ok(message) = serde_json::from_str(s.as_ref()) {
-                        let data_thread = data_thread.clone();
-                        actix_web::rt::spawn(async move {
-                            let _ = data_thread
-                                .game_manager
-                                .receive_message(game_id, watcher_id, message)
-                                .await;
-                        });
+                        match message {
+                            IncomingMessage::Ghost(IncomingGhostMessage::ClaimId(id)) => {
+                                if matches!(
+                                    data_thread.game_manager.watcher_exists(game_id, id),
+                                    Ok(true)
+                                ) {
+                                    if data_thread
+                                        .game_manager
+                                        .update_session(game_id, id, own_session.clone())
+                                        .await
+                                        .ok()
+                                        .and_then(std::result::Result::ok)
+                                        .is_none()
+                                    {
+                                        break;
+                                    }
+                                    watcher_id = Some(id);
+                                }
+                            }
+                            IncomingMessage::Ghost(IncomingGhostMessage::DemandId) => {
+                                let new_id = WatcherId::new();
+                                watcher_id = Some(new_id);
+
+                                if own_session
+                                    .send(
+                                        &GameOutgoingMessage::IdAssign(new_id)
+                                            .to_message()
+                                            .expect("default serializer cannot fail"),
+                                    )
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                };
+
+                                if data_thread
+                                    .game_manager
+                                    .add_unassigned(game_id, new_id, own_session.clone())
+                                    .await
+                                    .ok()
+                                    .and_then(std::result::Result::ok)
+                                    .is_none()
+                                {
+                                    break;
+                                };
+                            }
+                            x => {
+                                if let Some(watcher_id) = watcher_id {
+                                    let data_thread = data_thread.clone();
+                                    actix_web::rt::spawn(async move {
+                                        let _ = data_thread
+                                            .game_manager
+                                            .receive_message(game_id, watcher_id, x)
+                                            .await;
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
                 _ => break,
             }
         }
 
-        let _ = data
-            .game_manager
-            .remove_watcher_session(game_id, watcher_id);
+        if let Some(watcher_id) = watcher_id {
+            let _ = data
+                .game_manager
+                .remove_watcher_session(game_id, watcher_id);
+        }
         session.close(None).await.ok();
     });
 
