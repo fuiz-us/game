@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use dashmap::{mapref::entry::Entry, DashMap};
@@ -35,7 +38,7 @@ pub struct Message {
 
 impl Leaderboard {
     pub fn invalidate_cache(&self) {
-        self.invalidated.store(true, atomig::Ordering::SeqCst);
+        self.invalidated.store(true, Ordering::SeqCst);
     }
 
     pub fn update_cache(&self) {
@@ -71,7 +74,8 @@ impl Leaderboard {
 
         *x = positions;
 
-        self.invalidated.store(false, atomig::Ordering::SeqCst);
+        self.invalidated
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn add_score(&self, player: Id, score: u64) {
@@ -93,7 +97,7 @@ impl Leaderboard {
     }
 
     pub fn get_scores_truncated(&self) -> (usize, Scores) {
-        if self.invalidated.load(atomig::Ordering::SeqCst) {
+        if self.invalidated.load(Ordering::SeqCst) {
             self.update_cache();
         }
 
@@ -106,7 +110,7 @@ impl Leaderboard {
     }
 
     pub fn score(&self, watcher_id: Id) -> Option<ScoreMessage> {
-        if self.invalidated.load(atomig::Ordering::SeqCst) {
+        if self.invalidated.load(Ordering::SeqCst) {
             self.update_cache();
         }
 

@@ -16,7 +16,10 @@ use actix_web::{
 use futures_util::StreamExt;
 use game_manager::{game::IncomingGhostMessage, session::Session, GameManager};
 use itertools::Itertools;
-use std::sync::{atomic::AtomicU64, Arc};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 extern crate pretty_env_logger;
 #[macro_use]
@@ -100,7 +103,7 @@ fn websocket_heartbeat_verifier(mut session: actix_ws::Session) -> impl Fn(bytes
         loop {
             actix_web::rt::time::sleep(std::time::Duration::from_secs(5)).await;
             let new_value = fastrand::u64(0..u64::MAX);
-            sender_latest_value.store(new_value, atomig::Ordering::SeqCst);
+            sender_latest_value.store(new_value, Ordering::SeqCst);
             if session.ping(&new_value.to_ne_bytes()).await.is_err() {
                 break;
             }
@@ -108,7 +111,7 @@ fn websocket_heartbeat_verifier(mut session: actix_ws::Session) -> impl Fn(bytes
     });
 
     move |bytes: bytes::Bytes| {
-        let last_value = latest_value.load(atomig::Ordering::SeqCst);
+        let last_value = latest_value.load(Ordering::SeqCst);
         if let Ok(actual_bytes) = bytes.into_iter().collect_vec().try_into() {
             if u64::from_ne_bytes(actual_bytes) == last_value {
                 return false;
