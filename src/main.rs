@@ -11,7 +11,11 @@ use crate::game_manager::{
     GameVanish,
 };
 use actix_web::{
-    get, middleware::Logger, post, web, App, HttpRequest, HttpResponse, HttpServer, Responder,
+    get,
+    middleware::Logger,
+    post,
+    web::{self, Data},
+    App, HttpRequest, HttpResponse, HttpServer, Responder,
 };
 use futures_util::StreamExt;
 use game_manager::{game::IncomingGhostMessage, session::Session, GameManager};
@@ -36,26 +40,8 @@ struct AppState {
     game_manager: GameManager<Session>,
 }
 
-// fn configure_cookie(cookie: CookieBuilder) -> Cookie {
-//     if cfg!(feature = "https") {
-//         cookie
-//             .same_site(actix_web::cookie::SameSite::None)
-//             .secure(true)
-//             .path("/")
-//             .http_only(true)
-//             .finish()
-//     } else {
-//         cookie
-//             .same_site(actix_web::cookie::SameSite::Lax)
-//             .secure(false)
-//             .path("/")
-//             .http_only(true)
-//             .finish()
-//     }
-// }
-
 #[post("/add")]
-async fn add(data: web::Data<AppState>, fuiz: web::Json<Fuiz>) -> impl Responder {
+async fn add(data: Data<AppState>, fuiz: garde_actix_web::web::Json<Fuiz>) -> impl Responder {
     let game_id = data.game_manager.add_game(fuiz.into_inner());
 
     let host_id = Id::new();
@@ -78,8 +64,6 @@ async fn add(data: web::Data<AppState>, fuiz: web::Json<Fuiz>) -> impl Responder
             }
         }
     });
-
-    // let cookie = configure_cookie(CookieBuilder::new("wid", host_id.to_string()));
 
     Ok::<_, GameVanish>(web::Json(serde_json::json!({
         "game_id": game_id,
@@ -254,7 +238,6 @@ async fn main() -> std::io::Result<()> {
                     actix_web::http::header::AUTHORIZATION,
                     actix_web::http::header::ACCEPT,
                 ])
-                .supports_credentials()
                 .allowed_header(actix_web::http::header::CONTENT_TYPE);
             app.wrap(cors)
         }
