@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{clashmap::ClashMap, clashset::ClashSet};
 
-use super::{session::Tunnel, UpdateMessage};
+use super::{session::Tunnel, SyncMessage, UpdateMessage};
 
 #[derive(
     Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, DeserializeFromStr, SerializeDisplay,
@@ -157,5 +157,13 @@ impl<T: Tunnel> Watchers<T> {
         };
 
         session.send_message(message);
+    }
+
+    pub fn send_state(&self, message: &SyncMessage, watcher_id: Id) {
+        let Some(session) = self.sessions.get(&watcher_id) else {
+            return;
+        };
+
+        session.send_state(message);
     }
 }

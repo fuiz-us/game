@@ -18,7 +18,11 @@ use actix_web::{
     App, HttpRequest, HttpResponse, HttpServer, Responder,
 };
 use futures_util::StreamExt;
-use game_manager::{game::IncomingGhostMessage, session::Session, GameManager};
+use game_manager::{
+    game::{IncomingGhostMessage, Options},
+    session::Session,
+    GameManager,
+};
 use itertools::Itertools;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -40,9 +44,21 @@ struct AppState {
     game_manager: GameManager<Session>,
 }
 
+#[derive(serde::Deserialize, garde::Validate)]
+struct GameRequest {
+    #[garde(dive)]
+    config: Fuiz,
+    #[garde(skip)]
+    options: Options,
+}
+
 #[post("/add")]
-async fn add(data: Data<AppState>, fuiz: garde_actix_web::web::Json<Fuiz>) -> impl Responder {
-    let game_id = data.game_manager.add_game(fuiz.into_inner());
+async fn add(
+    data: Data<AppState>,
+    request: garde_actix_web::web::Json<GameRequest>,
+) -> impl Responder {
+    let GameRequest { config, options } = request.into_inner();
+    let game_id = data.game_manager.add_game(config, options);
 
     let host_id = Id::new();
 

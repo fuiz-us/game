@@ -56,7 +56,7 @@ pub enum UpdateMessage {
         index: usize,
         count: usize,
         all_statements: Vec<Word>,
-        assigned_statement: Vec<usize>,
+        assigned_statements: Vec<usize>,
         crossed: Vec<usize>,
         user_votes: Vec<usize>,
     },
@@ -153,7 +153,7 @@ impl Slide {
                                 text: s.to_owned(),
                             })
                             .collect_vec(),
-                        assigned_statement: match v {
+                        assigned_statements: match v {
                             ValueKind::Host | ValueKind::Unassigned => Vec::new(),
                             ValueKind::Player => {
                                 let mut rng = fastrand::Rng::new();

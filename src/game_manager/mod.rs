@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use self::{
     fuiz::config::Fuiz,
-    game::{Game, IncomingMessage},
+    game::{Game, IncomingMessage, Options},
     game_id::GameId,
     session::Tunnel,
     watcher::Id,
@@ -75,8 +75,8 @@ pub struct GameVanish {}
 impl actix_web::error::ResponseError for GameVanish {}
 
 impl<T: Tunnel> GameManager<T> {
-    pub fn add_game(&self, fuiz: Fuiz) -> GameId {
-        let shared_game = Box::new(Game::new(fuiz));
+    pub fn add_game(&self, fuiz: Fuiz, options: Options) -> GameId {
+        let shared_game = Box::new(Game::new(fuiz, options));
 
         loop {
             let game_id = GameId::new();

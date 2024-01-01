@@ -4,6 +4,7 @@ use std::{
 };
 
 use actix_web::rt::time::Instant;
+use heck::ToTitleCase;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -31,6 +32,11 @@ impl State {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct Options {
+    random_names: bool,
+}
+
 pub struct Game<T: Tunnel> {
     fuiz_config: Fuiz,
     pub watchers: Watchers<T>,
@@ -38,6 +44,7 @@ pub struct Game<T: Tunnel> {
     pub leaderboard: Leaderboard,
     state: Arc<Mutex<State>>,
     updated: Arc<Mutex<Instant>>,
+    options: Options,
 }
 
 impl<T: Tunnel> Debug for Game<T> {
@@ -124,7 +131,7 @@ pub enum SyncMessage {
 }
 
 impl<T: Tunnel> Game<T> {
-    pub fn new(fuiz: Fuiz) -> Self {
+    pub fn new(fuiz: Fuiz, options: Options) -> Self {
         Self {
             fuiz_config: fuiz,
             watchers: Watchers::default(),
@@ -132,6 +139,7 @@ impl<T: Tunnel> Game<T> {
             leaderboard: Leaderboard::default(),
             state: Arc::new(Mutex::new(State::WaitingScreen)),
             updated: Arc::new(Mutex::new(Instant::now())),
+            options,
         }
     }
 
@@ -266,6 +274,10 @@ impl<T: Tunnel> Game<T> {
         self.watchers.send_message(message, watcher_id);
     }
 
+    pub fn send_state(&self, message: &super::SyncMessage, watcher_id: Id) {
+        self.watchers.send_state(message, watcher_id);
+    }
+
     pub fn mark_as_done(&self) {
         self.change_state(State::Done);
         let watchers = self.watchers.vec().iter().map(|(x, _, _)| *x).collect_vec();
@@ -286,28 +298,11 @@ impl<T: Tunnel> Game<T> {
         self.update();
 
         match message {
-            IncomingMessage::Unassigned(IncomingUnassignedMessage::NameRequest(s)) => {
-                match self.names.set_name(watcher_id, &s) {
-                    Ok(resulting_name) => {
-                        self.watchers.update_watcher_value(
-                            watcher_id,
-                            Value::Player(resulting_name.clone()),
-                        );
-                        self.send(
-                            &UpdateMessage::NameAssign(resulting_name).into(),
-                            watcher_id,
-                        );
-
-                        self.announce_waiting();
-
-                        self.send(
-                            &UpdateMessage::WaitingScreen(self.get_waiting_message()).into(),
-                            watcher_id,
-                        );
-                    }
-                    Err(e) => {
-                        self.send(&UpdateMessage::NameError(e).into(), watcher_id);
-                    }
+            IncomingMessage::Unassigned(IncomingUnassignedMessage::NameRequest(s))
+                if !self.options.random_names =>
+            {
+                if let Err(e) = self.assign_name(watcher_id, s) {
+                    self.send(&UpdateMessage::NameError(e).into(), watcher_id);
                 }
             }
             message => match self.state() {
@@ -441,9 +436,37 @@ impl<T: Tunnel> Game<T> {
         self.watchers
             .add_watcher(watcher, Value::Unassigned, session)?;
 
-        self.send(&UpdateMessage::NameChoose.into(), watcher);
+        self.handle_unassigned(watcher);
 
         Ok(())
+    }
+
+    fn assign_name(&self, watcher: Id, name: String) -> Result<(), names::Error> {
+        let name = self.names.set_name(watcher, &name)?;
+
+        self.watchers
+            .update_watcher_value(watcher, Value::Player(name.clone()));
+
+        self.send(&UpdateMessage::NameAssign(name).into(), watcher);
+
+        self.announce_waiting();
+
+        self.send_state(&self.state_message(watcher, ValueKind::Player), watcher);
+
+        Ok(())
+    }
+
+    fn handle_unassigned(&self, watcher: Id) {
+        if self.options.random_names {
+            loop {
+                let name = petname::petname(2, " ").to_title_case();
+                if self.assign_name(watcher, name).is_ok() {
+                    break;
+                }
+            }
+        } else {
+            self.send(&UpdateMessage::NameChoose.into(), watcher);
+        }
     }
 
     pub fn reserve_host(&self, watcher: Id) {
@@ -455,20 +478,26 @@ impl<T: Tunnel> Game<T> {
             return;
         };
 
+        self.watchers.update_watcher_session(watcher_id, session);
+
         match watcher_value.clone() {
             Value::Host => {
-                session.send_state(&self.state_message(watcher_id, watcher_value.kind()));
+                self.send_state(
+                    &self.state_message(watcher_id, watcher_value.kind()),
+                    watcher_id,
+                );
             }
             Value::Player(name) => {
-                session.send_message(&UpdateMessage::NameAssign(name).into());
-                session.send_state(&self.state_message(watcher_id, watcher_value.kind()));
+                self.send(&UpdateMessage::NameAssign(name).into(), watcher_id);
+                self.send_state(
+                    &self.state_message(watcher_id, watcher_value.kind()),
+                    watcher_id,
+                );
             }
             Value::Unassigned => {
-                session.send_message(&UpdateMessage::NameChoose.into());
+                self.handle_unassigned(watcher_id);
             }
         }
-
-        self.watchers.update_watcher_session(watcher_id, session);
     }
 
     pub fn has_watcher(&self, watcher_id: Id) -> bool {
