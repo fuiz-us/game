@@ -26,8 +26,8 @@ pub struct Leaderboard {
 
 #[derive(Debug, Serialize, Clone, Copy)]
 pub struct ScoreMessage {
-    points: u64,
-    position: usize,
+    pub points: u64,
+    pub position: usize,
 }
 
 #[derive(Debug, Serialize, Clone)]

@@ -35,6 +35,7 @@ impl State {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Options {
     random_names: bool,
+    show_answers: bool,
 }
 
 pub struct Game<T: Tunnel> {
@@ -127,6 +128,10 @@ pub enum SyncMessage {
         index: usize,
         count: usize,
         score: Option<ScoreMessage>,
+    },
+    Metainfo {
+        score: u64,
+        show_answers: bool,
     },
 }
 
@@ -441,6 +446,17 @@ impl<T: Tunnel> Game<T> {
         Ok(())
     }
 
+    fn update_player_with_options(&self, watcher: Id) {
+        self.send_state(
+            &SyncMessage::Metainfo {
+                score: self.leaderboard.score(watcher).map_or(0, |x| x.points),
+                show_answers: self.options.show_answers,
+            }
+            .into(),
+            watcher,
+        );
+    }
+
     fn assign_name(&self, watcher: Id, name: String) -> Result<(), names::Error> {
         let name = self.names.set_name(watcher, &name)?;
 
@@ -448,6 +464,8 @@ impl<T: Tunnel> Game<T> {
             .update_watcher_value(watcher, Value::Player(name.clone()));
 
         self.send(&UpdateMessage::NameAssign(name).into(), watcher);
+
+        self.update_player_with_options(watcher);
 
         self.announce_waiting();
 
@@ -489,6 +507,7 @@ impl<T: Tunnel> Game<T> {
             }
             Value::Player(name) => {
                 self.send(&UpdateMessage::NameAssign(name).into(), watcher_id);
+                self.update_player_with_options(watcher_id);
                 self.send_state(
                     &self.state_message(watcher_id, watcher_value.kind()),
                     watcher_id,
