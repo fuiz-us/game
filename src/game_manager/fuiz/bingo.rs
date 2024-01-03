@@ -304,6 +304,7 @@ impl Slide {
                         self.send_winners(game);
                     }
                 }
+                _ => {}
             },
             IncomingMessage::Player(IncomingPlayerMessage::IndexAnswer(v)) => {
                 self.user_votes.modify_entry_or_default(*v, |s| {

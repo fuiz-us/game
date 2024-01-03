@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicBool, Mutex},
 };
 
 use actix_web::rt::time::Instant;
@@ -43,9 +43,10 @@ pub struct Game<T: Tunnel> {
     pub watchers: Watchers<T>,
     names: Names,
     pub leaderboard: Leaderboard,
-    state: Arc<Mutex<State>>,
-    updated: Arc<Mutex<Instant>>,
+    state: Mutex<State>,
+    updated: Mutex<Instant>,
     options: Options,
+    locked: AtomicBool,
 }
 
 impl<T: Tunnel> Debug for Game<T> {
@@ -95,6 +96,7 @@ pub enum IncomingGhostMessage {
 pub enum IncomingHostMessage {
     Next,
     Index(usize),
+    Lock(bool),
 }
 
 #[skip_serializing_none]
@@ -129,7 +131,10 @@ pub enum SyncMessage {
         count: usize,
         score: Option<ScoreMessage>,
     },
-    Metainfo {
+    HostMetainfo {
+        locked: bool,
+    },
+    PlayerMetainfo {
         score: u64,
         show_answers: bool,
     },
@@ -142,9 +147,10 @@ impl<T: Tunnel> Game<T> {
             watchers: Watchers::default(),
             names: Names::default(),
             leaderboard: Leaderboard::default(),
-            state: Arc::new(Mutex::new(State::WaitingScreen)),
-            updated: Arc::new(Mutex::new(Instant::now())),
+            state: Mutex::new(State::WaitingScreen),
+            updated: Mutex::new(Instant::now()),
             options,
+            locked: Default::default(),
         }
     }
 
@@ -291,6 +297,10 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
+    pub fn locked(&self) -> bool {
+        self.locked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub async fn receive_message(&self, watcher_id: Id, message: IncomingMessage) {
         let Some(watcher_value) = self.watchers.get_watcher_value(watcher_id) else {
             return;
@@ -302,7 +312,14 @@ impl<T: Tunnel> Game<T> {
 
         self.update();
 
+        let locked = self.locked();
+
         match message {
+            IncomingMessage::Unassigned(_) if locked => {}
+            IncomingMessage::Host(IncomingHostMessage::Lock(lock_state)) => {
+                self.locked
+                    .store(lock_state, std::sync::atomic::Ordering::SeqCst);
+            }
             IncomingMessage::Unassigned(IncomingUnassignedMessage::NameRequest(s))
                 if !self.options.random_names =>
             {
@@ -441,14 +458,16 @@ impl<T: Tunnel> Game<T> {
         self.watchers
             .add_watcher(watcher, Value::Unassigned, session)?;
 
-        self.handle_unassigned(watcher);
+        if !self.locked() {
+            self.handle_unassigned(watcher);
+        }
 
         Ok(())
     }
 
     fn update_player_with_options(&self, watcher: Id) {
         self.send_state(
-            &SyncMessage::Metainfo {
+            &SyncMessage::PlayerMetainfo {
                 score: self.leaderboard.score(watcher).map_or(0, |x| x.points),
                 show_answers: self.options.show_answers,
             }
@@ -504,6 +523,13 @@ impl<T: Tunnel> Game<T> {
                     &self.state_message(watcher_id, watcher_value.kind()),
                     watcher_id,
                 );
+                self.send_state(
+                    &SyncMessage::HostMetainfo {
+                        locked: self.locked(),
+                    }
+                    .into(),
+                    watcher_id,
+                );
             }
             Value::Player(name) => {
                 self.send(&UpdateMessage::NameAssign(name).into(), watcher_id);
@@ -513,6 +539,7 @@ impl<T: Tunnel> Game<T> {
                     watcher_id,
                 );
             }
+            Value::Unassigned if self.locked() => {}
             Value::Unassigned => {
                 self.handle_unassigned(watcher_id);
             }
