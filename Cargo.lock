@@ -371,6 +371,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "boxcar"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e516014975db8769c0dcd1aba681c21079475fcddf77118bf54f9e2e013f6b29"
+
+[[package]]
 name = "brotli"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -780,6 +786,7 @@ dependencies = [
  "actix-web",
  "actix-ws",
  "atomig",
+ "boxcar",
  "bytes",
  "dashmap",
  "derive-where",

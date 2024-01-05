@@ -1,27 +1,30 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
-};
-
-use dashmap::{mapref::entry::Entry, DashMap};
 use itertools::Itertools;
 use serde::Serialize;
+use std::{
+    collections::HashMap,
+    sync::{atomic::AtomicUsize, OnceLock},
+};
 
-use super::watcher::Id;
+use super::{watcher::Id, TruncatedVec};
 
-type Scores = Vec<(Id, u64)>;
-type Positions = HashMap<Id, usize>;
+#[derive(Debug, Clone)]
+pub struct SlideSummary {
+    scores_descending: Vec<(Id, u64)>,
+    mapping: HashMap<Id, (u64, usize)>,
+    points_earned: Vec<(Id, u64)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinalSummary {
+    summary_descending: Vec<(Id, Vec<u64>)>,
+    mapping: HashMap<Id, Vec<u64>>,
+}
 
 #[derive(Debug, Default)]
 pub struct Leaderboard {
-    mapping: DashMap<Id, u64>,
-
-    invalidated: Arc<AtomicBool>,
-    scores_descending: Arc<Mutex<Scores>>,
-    position_mapping: Arc<Mutex<Positions>>,
+    slide_summaries: boxcar::Vec<SlideSummary>,
+    current_slide: AtomicUsize,
+    final_summary: OnceLock<FinalSummary>,
 }
 
 #[derive(Debug, Serialize, Clone, Copy)]
@@ -30,98 +33,137 @@ pub struct ScoreMessage {
     pub position: usize,
 }
 
-#[derive(Debug, Serialize, Clone)]
-pub struct Message {
-    pub exact_count: usize,
-    pub points: Vec<(String, u64)>,
-}
-
 impl Leaderboard {
-    pub fn invalidate_cache(&self) {
-        self.invalidated.store(true, Ordering::SeqCst);
+    fn slide(&self) -> usize {
+        self.current_slide.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    pub fn update_cache(&self) {
-        let values = self
-            .mapping
-            .iter()
-            .map(|x| (x.key().to_owned(), x.value().to_owned()))
-            .collect_vec();
+    pub fn add_scores(&self, scores: &[(Id, u64)]) {
+        let mut summary: HashMap<Id, u64> = self
+            .slide_summaries
+            .get(self.slide())
+            .map(|s| {
+                s.mapping
+                    .iter()
+                    .map(|(id, (points, _))| (*id, *points))
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        let values = values
-            .into_iter()
-            .sorted_by_key(|(_, v)| *v)
-            .rev()
-            .collect_vec();
-
-        let positions: Positions = values
-            .iter()
-            .enumerate()
-            .map(|(i, (w, _))| (*w, i))
-            .collect();
-
-        let mut x = self
-            .scores_descending
-            .lock()
-            .expect("Program must not panic");
-
-        *x = values;
-
-        let mut x = self
-            .position_mapping
-            .lock()
-            .expect("Program must not panic");
-
-        *x = positions;
-
-        self.invalidated
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    pub fn add_score(&self, player: Id, score: u64) {
-        self.invalidate_cache();
-
-        match self.mapping.entry(player) {
-            Entry::Occupied(o) => {
-                let score = o.get().saturating_add(score);
-                o.replace_entry(score);
-            }
-            Entry::Vacant(v) => {
-                v.insert(score);
-            }
-        };
-    }
-
-    pub fn _remove_player(&self, player: Id) {
-        self.mapping.remove(&player);
-    }
-
-    pub fn get_scores_truncated(&self) -> (usize, Scores) {
-        if self.invalidated.load(Ordering::SeqCst) {
-            self.update_cache();
+        for (id, points) in scores {
+            *summary.entry(*id).or_default() += points;
         }
 
-        let scores = self
-            .scores_descending
-            .lock()
-            .expect("Program must not panic");
+        let scores_descending = summary
+            .iter()
+            .sorted_by_key(|(_, points)| *points)
+            .rev()
+            .map(|(a, b)| (*a, *b))
+            .collect_vec();
 
-        (scores.len(), scores.iter().take(50).copied().collect_vec())
+        let mapping = scores_descending
+            .iter()
+            .enumerate()
+            .map(|(position, (id, points))| (*id, (*points, position)))
+            .collect();
+
+        let i = self.slide_summaries.push(SlideSummary {
+            scores_descending,
+            mapping,
+            points_earned: scores.to_vec(),
+        });
+
+        self.current_slide
+            .store(i, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn scores_descending<const T: usize>(&self) -> [TruncatedVec<(Id, u64)>; T] {
+        const LIMIT: usize = 50;
+
+        let slide = self.slide();
+
+        std::array::from_fn(|i| {
+            let current_slide = slide.checked_sub(i);
+
+            match current_slide.and_then(|cs| self.slide_summaries.get(cs)) {
+                None => TruncatedVec::default(),
+                Some(s) => TruncatedVec::new(
+                    s.scores_descending.iter().copied(),
+                    LIMIT,
+                    s.scores_descending.len(),
+                ),
+            }
+        })
+    }
+
+    fn compute_final_summary(&self) -> FinalSummary {
+        let summaries = self
+            .slide_summaries
+            .iter()
+            .map(|(_, s)| s.points_earned.clone())
+            .collect_vec();
+
+        let summary_mapping: Vec<HashMap<_, _>> = summaries
+            .iter()
+            .map(|s| s.iter().copied().collect())
+            .collect_vec();
+
+        let scores_descending = self
+            .slide_summaries
+            .get(self.slide())
+            .map_or(vec![], |s| s.scores_descending.clone());
+
+        let id_to_points = |id| {
+            summary_mapping
+                .iter()
+                .map(|h| *h.get(&id).unwrap_or(&0))
+                .collect_vec()
+        };
+
+        FinalSummary {
+            summary_descending: scores_descending
+                .iter()
+                .map(|(id, _)| (*id, id_to_points(*id)))
+                .collect_vec(),
+            mapping: scores_descending
+                .into_iter()
+                .map(|(id, _)| (id, id_to_points(id)))
+                .collect(),
+        }
+    }
+
+    fn final_summary(&self) -> &FinalSummary {
+        self.final_summary
+            .get_or_init(|| self.compute_final_summary())
+    }
+
+    pub fn host_summary(&self, limit: usize) -> TruncatedVec<(Id, Vec<u64>)> {
+        let final_summary = self.final_summary();
+
+        TruncatedVec::new(
+            final_summary
+                .summary_descending
+                .iter()
+                .map(|(id, points)| (*id, points.clone())),
+            limit,
+            final_summary.summary_descending.len(),
+        )
+    }
+
+    pub fn player_summary(&self, id: Id) -> Vec<u64> {
+        self.final_summary().mapping.get(&id).map_or(
+            vec![0; self.slide_summaries.count()],
+            std::clone::Clone::clone,
+        )
     }
 
     pub fn score(&self, watcher_id: Id) -> Option<ScoreMessage> {
-        if self.invalidated.load(Ordering::SeqCst) {
-            self.update_cache();
-        }
-
-        let positions = self
-            .position_mapping
-            .lock()
-            .expect("Program must not panic");
-
-        positions.get(&watcher_id).map(|&position| ScoreMessage {
-            points: self.mapping.get(&watcher_id).map_or(0, |x| *x),
-            position,
+        let summary = self.slide_summaries.get(self.slide());
+        summary.and_then(|s| {
+            s.mapping
+                .get(&watcher_id)
+                .map(std::clone::Clone::clone)
+                .map(|(points, position)| ScoreMessage { points, position })
         })
     }
 }

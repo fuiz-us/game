@@ -1,5 +1,6 @@
 use derive_where::derive_where;
 use enum_map::EnumMap;
+use itertools::Itertools;
 use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use serde::Serialize;
 use thiserror::Error;
@@ -43,6 +44,30 @@ pub enum UpdateMessage {
 impl UpdateMessage {
     pub fn to_message(&self) -> String {
         serde_json::to_string(self).expect("default serializer cannot fail")
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[derive_where(Default)]
+pub struct TruncatedVec<T> {
+    exact_count: usize,
+    items: Vec<T>,
+}
+
+impl<T: Clone> TruncatedVec<T> {
+    fn new<I: Iterator<Item = T>>(list: I, limit: usize, exact_count: usize) -> Self {
+        let items = list.take(limit).collect_vec();
+        Self { exact_count, items }
+    }
+
+    fn map<F, U>(self, f: F) -> TruncatedVec<U>
+    where
+        F: Fn(T) -> U,
+    {
+        TruncatedVec {
+            exact_count: self.exact_count,
+            items: self.items.into_iter().map(f).collect_vec(),
+        }
     }
 }
 

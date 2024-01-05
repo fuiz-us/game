@@ -46,7 +46,7 @@ pub struct Slide {
     crossed: ClashSet<usize>,
     #[serde(skip)]
     #[garde(skip)]
-    slide_state: Arc<Atomic<SlideState>>,
+    state: Arc<Atomic<SlideState>>,
 }
 
 #[serde_with::serde_as]
@@ -171,13 +171,13 @@ impl Slide {
     }
 
     fn change_state(&self, before: SlideState, after: SlideState) -> bool {
-        self.slide_state
+        self.state
             .compare_exchange(before, after, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     }
 
     fn state(&self) -> SlideState {
-        self.slide_state.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst)
     }
 
     fn get_winners<T: Tunnel>(&self, game: &Game<T>) -> Vec<String> {
@@ -281,13 +281,17 @@ impl Slide {
     ) {
         match message {
             IncomingMessage::Host(host_message) => match host_message {
-                IncomingHostMessage::Next => match self.slide_state.load(Ordering::SeqCst) {
+                IncomingHostMessage::Next => match self.state.load(Ordering::SeqCst) {
                     SlideState::Unstarted => self.send_list(game, index, count),
                     SlideState::List => self.send_winners(game),
                     SlideState::Winners => {
-                        for id in self.get_winners_id(game) {
-                            game.leaderboard.add_score(id, self.points_awarded);
-                        }
+                        game.leaderboard.add_scores(
+                            &self
+                                .get_winners_id(game)
+                                .into_iter()
+                                .map(|i| (i, self.points_awarded))
+                                .collect_vec(),
+                        );
                         game.finish_slide();
                     }
                 },
@@ -304,7 +308,7 @@ impl Slide {
                         self.send_winners(game);
                     }
                 }
-                _ => {}
+                IncomingHostMessage::Lock(_) => {}
             },
             IncomingMessage::Player(IncomingPlayerMessage::IndexAnswer(v)) => {
                 self.user_votes.modify_entry_or_default(*v, |s| {

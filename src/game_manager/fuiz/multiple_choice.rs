@@ -95,7 +95,7 @@ pub struct Slide {
     answer_start: Arc<Mutex<Option<Instant>>>,
     #[serde(skip)]
     #[garde(skip)]
-    slide_state: Arc<Atomic<SlideState>>,
+    state: Arc<Atomic<SlideState>>,
 }
 
 #[serde_with::serde_as]
@@ -239,13 +239,13 @@ impl Slide {
     }
 
     fn change_state(&self, before: SlideState, after: SlideState) -> bool {
-        self.slide_state
+        self.state
             .compare_exchange(before, after, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     }
 
     fn state(&self) -> SlideState {
-        self.slide_state.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst)
     }
 
     fn send_answers_results<T: Tunnel>(&self, game: &Game<T>) {
@@ -271,22 +271,29 @@ impl Slide {
     fn add_scores<T: Tunnel>(&self, game: &Game<T>) {
         let starting_instant = self.timer();
 
-        for ua in &self.user_answers {
-            let id = ua.key();
-            let (answer, instant) = *ua.value();
-            let correct = self.answers.get(answer).is_some_and(|x| x.correct);
-            game.leaderboard.add_score(id.to_owned(), {
-                if correct {
-                    Slide::calculate_score(
-                        self.time_limit,
-                        instant - starting_instant,
-                        self.points_awarded,
+        game.leaderboard.add_scores(
+            &self
+                .user_answers
+                .iter()
+                .map(|ua| {
+                    let id = ua.key();
+                    let (answer, instant) = *ua.value();
+                    let correct = self.answers.get(answer).is_some_and(|x| x.correct);
+                    (
+                        *id,
+                        if correct {
+                            Slide::calculate_score(
+                                self.time_limit,
+                                instant - starting_instant,
+                                self.points_awarded,
+                            )
+                        } else {
+                            0
+                        },
                     )
-                } else {
-                    0
-                }
-            });
-        }
+                })
+                .collect_vec(),
+        );
     }
 
     pub fn state_message<T: Tunnel>(
@@ -366,7 +373,7 @@ impl Slide {
     ) {
         match message {
             IncomingMessage::Host(IncomingHostMessage::Next) => {
-                match self.slide_state.load(Ordering::SeqCst) {
+                match self.state.load(Ordering::SeqCst) {
                     SlideState::Unstarted => {
                         self.send_question_announcements(game, index, count).await;
                     }

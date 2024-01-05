@@ -52,8 +52,8 @@ pub enum Value {
 #[derive_where::derive_where(Default)]
 pub struct Watchers<T: Tunnel> {
     sessions: ClashMap<Id, T>,
-    watchers: ClashMap<Id, Value>,
-    reverse_watchers: EnumMap<ValueKind, ClashSet<Id>>,
+    mapping: ClashMap<Id, Value>,
+    reverse_mapping: EnumMap<ValueKind, ClashSet<Id>>,
 }
 
 const MAX_PLAYERS: usize = crate::CONFIG.fuiz.max_player_count.unsigned_abs() as usize;
@@ -68,10 +68,10 @@ impl actix_web::error::ResponseError for Error {}
 
 impl<T: Tunnel> Watchers<T> {
     pub fn vec(&self) -> Vec<(Id, T, Value)> {
-        self.reverse_watchers
+        self.reverse_mapping
             .values()
             .flat_map(|x| x.iter())
-            .filter_map(|x| match (self.sessions.get(&x), self.watchers.get(&x)) {
+            .filter_map(|x| match (self.sessions.get(&x), self.mapping.get(&x)) {
                 (Some(t), Some(v)) => Some((x, t, v)),
                 _ => None,
             })
@@ -79,9 +79,9 @@ impl<T: Tunnel> Watchers<T> {
     }
 
     pub fn specific_vec(&self, filter: ValueKind) -> Vec<(Id, T, Value)> {
-        self.reverse_watchers[filter]
+        self.reverse_mapping[filter]
             .iter()
-            .filter_map(|x| match (self.sessions.get(&x), self.watchers.get(&x)) {
+            .filter_map(|x| match (self.sessions.get(&x), self.mapping.get(&x)) {
                 (Some(t), Some(v)) => Some((x, t, v)),
                 _ => None,
             })
@@ -89,7 +89,7 @@ impl<T: Tunnel> Watchers<T> {
     }
 
     pub fn specific_count(&self, filter: ValueKind) -> usize {
-        self.reverse_watchers[filter].len()
+        self.reverse_mapping[filter].len()
     }
 
     pub fn add_watcher(
@@ -108,23 +108,23 @@ impl<T: Tunnel> Watchers<T> {
             x.close();
         }
 
-        self.watchers.insert(watcher_id, watcher_value);
-        self.reverse_watchers[kind].insert(watcher_id);
+        self.mapping.insert(watcher_id, watcher_value);
+        self.reverse_mapping[kind].insert(watcher_id);
 
         Ok(())
     }
 
     pub fn update_watcher_value(&self, watcher_id: Id, watcher_value: Value) {
-        let old_kind = match self.watchers.get(&watcher_id) {
+        let old_kind = match self.mapping.get(&watcher_id) {
             Some(v) => v.kind(),
             _ => return,
         };
         let new_kind = watcher_value.kind();
         if old_kind != new_kind {
-            self.reverse_watchers[old_kind].remove(&watcher_id);
-            self.reverse_watchers[new_kind].insert(watcher_id);
+            self.reverse_mapping[old_kind].remove(&watcher_id);
+            self.reverse_mapping[new_kind].insert(watcher_id);
         }
-        self.watchers.insert(watcher_id, watcher_value);
+        self.mapping.insert(watcher_id, watcher_value);
     }
 
     pub fn update_watcher_session(&self, watcher_id: Id, session: T) {
@@ -132,17 +132,17 @@ impl<T: Tunnel> Watchers<T> {
     }
 
     pub fn get_watcher_value(&self, watcher_id: Id) -> Option<Value> {
-        self.watchers.get(&watcher_id)
+        self.mapping.get(&watcher_id)
     }
 
     pub fn has_watcher(&self, watcher_id: Id) -> bool {
-        self.watchers.contains_key(&watcher_id)
+        self.mapping.contains_key(&watcher_id)
     }
 
     pub fn reserve_watcher(&self, watcher_id: Id, watcher_value: Value) {
         let kind = watcher_value.kind();
-        self.watchers.insert(watcher_id, watcher_value);
-        self.reverse_watchers[kind].insert(watcher_id);
+        self.mapping.insert(watcher_id, watcher_value);
+        self.reverse_mapping[kind].insert(watcher_id);
     }
 
     pub fn remove_watcher_session(&self, watcher_id: &Id) {

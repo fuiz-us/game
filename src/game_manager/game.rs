@@ -13,10 +13,11 @@ use crate::game_manager::watcher::Value;
 
 use super::{
     fuiz::config::Fuiz,
-    leaderboard::{Leaderboard, Message, ScoreMessage},
+    leaderboard::{Leaderboard, ScoreMessage},
     names::{self, Names},
     session::Tunnel,
     watcher::{self, Id, ValueKind, Watchers},
+    TruncatedVec,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -103,41 +104,56 @@ pub enum IncomingHostMessage {
 #[derive(Debug, Serialize, Clone)]
 pub enum UpdateMessage {
     IdAssign(Id),
-    WaitingScreen(WaitingScreenMessage),
+    WaitingScreen(TruncatedVec<String>),
     NameChoose,
     NameAssign(String),
     NameError(names::Error),
-    Leaderboard { leaderboard: Message },
+    Leaderboard { leaderboard: LeaderboardMessage },
     Score { score: Option<ScoreMessage> },
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct WaitingScreenMessage {
-    exact_count: usize,
-    players: Vec<String>,
-    truncated: bool,
+    Summary(SummaryMessage),
 }
 
 #[derive(Debug, Serialize, Clone)]
 pub enum SyncMessage {
-    WaitingScreen(WaitingScreenMessage),
+    WaitingScreen(TruncatedVec<String>),
     Leaderboard {
         index: usize,
         count: usize,
-        leaderboard: Message,
+        leaderboard: LeaderboardMessage,
     },
     Score {
         index: usize,
         count: usize,
         score: Option<ScoreMessage>,
     },
-    HostMetainfo {
-        locked: bool,
+    Metainfo(MetainfoMessage),
+    Summary(SummaryMessage),
+    NotAllowed,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub enum SummaryMessage {
+    Player {
+        score: Option<ScoreMessage>,
+        points: Vec<u64>,
+        config: Fuiz,
     },
-    PlayerMetainfo {
-        score: u64,
-        show_answers: bool,
+    Host {
+        points: TruncatedVec<(String, Vec<u64>)>,
+        config: Fuiz,
     },
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub enum MetainfoMessage {
+    Host { locked: bool },
+    Player { score: u64, show_answers: bool },
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct LeaderboardMessage {
+    pub current: TruncatedVec<(String, u64)>,
+    pub prior: TruncatedVec<(String, u64)>,
 }
 
 impl<T: Tunnel> Game<T> {
@@ -150,7 +166,7 @@ impl<T: Tunnel> Game<T> {
             state: Mutex::new(State::WaitingScreen),
             updated: Mutex::new(Instant::now()),
             options,
-            locked: Default::default(),
+            locked: AtomicBool::default(),
         }
     }
 
@@ -206,15 +222,16 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    pub fn leaderboard_message(&self) -> Message {
-        let (exact_count, points) = self.leaderboard.get_scores_truncated();
+    pub fn leaderboard_message(&self) -> LeaderboardMessage {
+        let [current, prior] = self.leaderboard.scores_descending();
 
-        Message {
-            exact_count,
-            points: points
-                .into_iter()
-                .map(|(i, s)| (self.names.get_name(&i).unwrap_or("Unknown".to_owned()), s))
-                .collect_vec(),
+        let id_map = |i| self.names.get_name(&i).unwrap_or("Unknown".to_owned());
+
+        let id_score_map = |(id, s)| (id_map(id), s);
+
+        LeaderboardMessage {
+            current: current.map(id_score_map),
+            prior: prior.map(id_score_map),
         }
     }
 
@@ -236,6 +253,32 @@ impl<T: Tunnel> Game<T> {
                 }
                 .into(),
             })
+        });
+    }
+
+    fn announce_summary(&self) {
+        self.change_state(State::Done);
+
+        self.announce_with(|id, vk| match vk {
+            ValueKind::Host => Some(
+                UpdateMessage::Summary(SummaryMessage::Host {
+                    points: self
+                        .leaderboard
+                        .host_summary(50)
+                        .map(|(id, x)| (self.get_name(id).unwrap_or("Unknown".to_owned()), x)),
+                    config: self.fuiz_config.clone(),
+                })
+                .into(),
+            ),
+            ValueKind::Player => Some(
+                UpdateMessage::Summary(SummaryMessage::Player {
+                    score: self.score(id),
+                    points: self.leaderboard.player_summary(id),
+                    config: self.fuiz_config.clone(),
+                })
+                .into(),
+            ),
+            ValueKind::Unassigned => None,
         });
     }
 
@@ -323,7 +366,7 @@ impl<T: Tunnel> Game<T> {
             IncomingMessage::Unassigned(IncomingUnassignedMessage::NameRequest(s))
                 if !self.options.random_names =>
             {
-                if let Err(e) = self.assign_name(watcher_id, s) {
+                if let Err(e) = self.assign_name(watcher_id, &s) {
                     self.send(&UpdateMessage::NameError(e).into(), watcher_id);
                 }
             }
@@ -337,7 +380,7 @@ impl<T: Tunnel> Game<T> {
                     if finished {
                         if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
                             if index + 1 >= self.fuiz_config.len() {
-                                self.change_state(State::Done);
+                                self.announce_summary();
                             } else {
                                 self.change_state(State::Slide {
                                     index: index + 1,
@@ -361,7 +404,7 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    fn get_names(&self) -> Vec<String> {
+    fn get_names(&self) -> impl Iterator<Item = String> {
         self.watchers
             .specific_vec(ValueKind::Player)
             .into_iter()
@@ -369,19 +412,6 @@ impl<T: Tunnel> Game<T> {
                 Value::Player(s) => Some(s),
                 _ => None,
             })
-            .collect_vec()
-    }
-
-    fn get_names_limited(&self, limit: usize) -> Vec<String> {
-        self.watchers
-            .specific_vec(ValueKind::Player)
-            .into_iter()
-            .take(limit)
-            .filter_map(|(_, _, x)| match x {
-                Value::Player(s) => Some(s),
-                _ => None,
-            })
-            .collect_vec()
     }
 
     pub fn state_message(&self, watcher_id: Id, watcher_kind: ValueKind) -> super::SyncMessage {
@@ -410,42 +440,30 @@ impl<T: Tunnel> Game<T> {
                 }
             }
             State::Done => match watcher_kind {
-                ValueKind::Host | ValueKind::Unassigned => SyncMessage::Leaderboard {
-                    index: self.fuiz_config.len() - 1,
-                    count: self.fuiz_config.len(),
-                    leaderboard: self.leaderboard_message(),
-                }
+                ValueKind::Host => SyncMessage::Summary(SummaryMessage::Host {
+                    points: self.leaderboard.host_summary(50).map(|(id, points)| {
+                        (self.get_name(id).unwrap_or("Unknown".to_owned()), points)
+                    }),
+                    config: self.fuiz_config.clone(),
+                })
                 .into(),
-                ValueKind::Player => SyncMessage::Score {
-                    index: self.fuiz_config.len() - 1,
-                    count: self.fuiz_config.len(),
+                ValueKind::Player => SyncMessage::Summary(SummaryMessage::Player {
                     score: self.score(watcher_id),
-                }
+                    points: self.leaderboard.player_summary(watcher_id),
+                    config: self.fuiz_config.clone(),
+                })
                 .into(),
+                ValueKind::Unassigned => SyncMessage::NotAllowed.into(),
             },
         }
     }
 
-    pub fn get_waiting_message(&self) -> WaitingScreenMessage {
+    pub fn get_waiting_message(&self) -> TruncatedVec<String> {
         const LIMIT: usize = 50;
 
         let exact_count = self.watchers.specific_count(ValueKind::Player);
 
-        if exact_count < LIMIT {
-            let names = self.get_names();
-            WaitingScreenMessage {
-                exact_count: names.len(),
-                players: names,
-                truncated: false,
-            }
-        } else {
-            let names = self.get_names_limited(LIMIT);
-            WaitingScreenMessage {
-                exact_count,
-                players: names,
-                truncated: true,
-            }
-        }
+        TruncatedVec::new(self.get_names(), LIMIT, exact_count)
     }
 
     pub fn announce_waiting(&self) {
@@ -467,17 +485,17 @@ impl<T: Tunnel> Game<T> {
 
     fn update_player_with_options(&self, watcher: Id) {
         self.send_state(
-            &SyncMessage::PlayerMetainfo {
+            &SyncMessage::Metainfo(MetainfoMessage::Player {
                 score: self.leaderboard.score(watcher).map_or(0, |x| x.points),
                 show_answers: self.options.show_answers,
-            }
+            })
             .into(),
             watcher,
         );
     }
 
-    fn assign_name(&self, watcher: Id, name: String) -> Result<(), names::Error> {
-        let name = self.names.set_name(watcher, &name)?;
+    fn assign_name(&self, watcher: Id, name: &str) -> Result<(), names::Error> {
+        let name = self.names.set_name(watcher, name)?;
 
         self.watchers
             .update_watcher_value(watcher, Value::Player(name.clone()));
@@ -497,7 +515,7 @@ impl<T: Tunnel> Game<T> {
         if self.options.random_names {
             loop {
                 let name = petname::petname(2, " ").to_title_case();
-                if self.assign_name(watcher, name).is_ok() {
+                if self.assign_name(watcher, &name).is_ok() {
                     break;
                 }
             }
@@ -524,9 +542,9 @@ impl<T: Tunnel> Game<T> {
                     watcher_id,
                 );
                 self.send_state(
-                    &SyncMessage::HostMetainfo {
+                    &SyncMessage::Metainfo(MetainfoMessage::Host {
                         locked: self.locked(),
-                    }
+                    })
                     .into(),
                     watcher_id,
                 );
