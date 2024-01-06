@@ -95,6 +95,11 @@ async fn alive(data: web::Data<AppState>, game_id: web::Path<GameId>) -> impl Re
         .to_string()
 }
 
+#[get("/count")]
+async fn count(data: web::Data<AppState>) -> impl Responder {
+    data.game_manager.count().to_string()
+}
+
 fn websocket_heartbeat_verifier(mut session: actix_ws::Session) -> impl Fn(bytes::Bytes) -> bool {
     let latest_value = Arc::new(AtomicU64::new(0));
 
@@ -243,6 +248,7 @@ async fn main() -> std::io::Result<()> {
             .route("/hello", web::get().to(|| async { "Hello World!" }))
             .service(alive)
             .service(add)
+            .service(count)
             .service(watch);
 
         #[cfg(feature = "https")]

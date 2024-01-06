@@ -16,7 +16,7 @@ pub struct SlideSummary {
 
 #[derive(Debug, Clone)]
 pub struct FinalSummary {
-    summary_descending: Vec<(Id, Vec<u64>)>,
+    stats: Vec<(usize, usize)>,
     mapping: HashMap<Id, Vec<u64>>,
 }
 
@@ -121,9 +121,20 @@ impl Leaderboard {
         };
 
         FinalSummary {
-            summary_descending: scores_descending
+            stats: self
+                .slide_summaries
                 .iter()
-                .map(|(id, _)| (*id, id_to_points(*id)))
+                .map(|(_, s)| {
+                    s.points_earned
+                        .iter()
+                        .fold((0, 0), |(correct, wrong), (_, earned)| {
+                            if *earned > 0 {
+                                (correct + 1, wrong)
+                            } else {
+                                (correct, wrong + 1)
+                            }
+                        })
+                })
                 .collect_vec(),
             mapping: scores_descending
                 .into_iter()
@@ -137,17 +148,10 @@ impl Leaderboard {
             .get_or_init(|| self.compute_final_summary())
     }
 
-    pub fn host_summary(&self, limit: usize) -> TruncatedVec<(Id, Vec<u64>)> {
+    pub fn host_summary(&self) -> (usize, Vec<(usize, usize)>) {
         let final_summary = self.final_summary();
 
-        TruncatedVec::new(
-            final_summary
-                .summary_descending
-                .iter()
-                .map(|(id, points)| (*id, points.clone())),
-            limit,
-            final_summary.summary_descending.len(),
-        )
+        (final_summary.mapping.len(), final_summary.stats.clone())
     }
 
     pub fn player_summary(&self, id: Id) -> Vec<u64> {

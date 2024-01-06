@@ -33,7 +33,7 @@ impl State {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Options {
     random_names: bool,
     show_answers: bool,
@@ -113,6 +113,7 @@ pub enum UpdateMessage {
     Summary(SummaryMessage),
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
 pub enum SyncMessage {
     WaitingScreen(TruncatedVec<String>),
@@ -131,6 +132,7 @@ pub enum SyncMessage {
     NotAllowed,
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
 pub enum SummaryMessage {
     Player {
@@ -139,8 +141,10 @@ pub enum SummaryMessage {
         config: Fuiz,
     },
     Host {
-        points: TruncatedVec<(String, Vec<u64>)>,
+        stats: Vec<(usize, usize)>,
+        player_count: usize,
         config: Fuiz,
+        options: Options,
     },
 }
 
@@ -261,12 +265,15 @@ impl<T: Tunnel> Game<T> {
 
         self.announce_with(|id, vk| match vk {
             ValueKind::Host => Some(
-                UpdateMessage::Summary(SummaryMessage::Host {
-                    points: self
-                        .leaderboard
-                        .host_summary(50)
-                        .map(|(id, x)| (self.get_name(id).unwrap_or("Unknown".to_owned()), x)),
-                    config: self.fuiz_config.clone(),
+                UpdateMessage::Summary({
+                    let (player_count, stats) = self.leaderboard.host_summary();
+
+                    SummaryMessage::Host {
+                        stats,
+                        player_count,
+                        config: self.fuiz_config.clone(),
+                        options: self.options.clone(),
+                    }
                 })
                 .into(),
             ),
@@ -440,11 +447,14 @@ impl<T: Tunnel> Game<T> {
                 }
             }
             State::Done => match watcher_kind {
-                ValueKind::Host => SyncMessage::Summary(SummaryMessage::Host {
-                    points: self.leaderboard.host_summary(50).map(|(id, points)| {
-                        (self.get_name(id).unwrap_or("Unknown".to_owned()), points)
-                    }),
-                    config: self.fuiz_config.clone(),
+                ValueKind::Host => SyncMessage::Summary({
+                    let (player_count, stats) = self.leaderboard.host_summary();
+                    SummaryMessage::Host {
+                        stats,
+                        player_count,
+                        config: self.fuiz_config.clone(),
+                        options: self.options.clone(),
+                    }
                 })
                 .into(),
                 ValueKind::Player => SyncMessage::Summary(SummaryMessage::Player {

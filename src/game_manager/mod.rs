@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicUsize;
+
 use derive_where::derive_where;
 use enum_map::EnumMap;
 use itertools::Itertools;
@@ -91,6 +93,7 @@ impl<T: Tunnel> SharedGame<T> {
 #[derive_where(Debug, Default)]
 pub struct GameManager<T: Tunnel> {
     games: EnumMap<GameId, SharedGame<T>>,
+    game_count: AtomicUsize,
 }
 
 #[derive(Debug, Error)]
@@ -112,6 +115,8 @@ impl<T: Tunnel> GameManager<T> {
 
             if game.is_none() {
                 *game = Some(shared_game);
+                self.game_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return game_id;
             }
         }
@@ -192,7 +197,13 @@ impl<T: Tunnel> GameManager<T> {
     pub fn remove_game(&self, game_id: GameId) {
         let mut game = self.games[game_id].0.write();
         if let Some(ongoing_game) = game.take() {
+            self.game_count
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             ongoing_game.mark_as_done();
         }
+    }
+
+    pub fn count(&self) -> usize {
+        self.game_count.load(std::sync::atomic::Ordering::SeqCst)
     }
 }

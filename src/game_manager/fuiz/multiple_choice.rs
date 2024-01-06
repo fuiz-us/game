@@ -70,6 +70,7 @@ fn validate_time_limit(val: &Duration) -> ValidationResult {
 }
 
 #[serde_with::serde_as]
+#[skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, serde::Deserialize, Validate)]
 pub struct Slide {
     #[garde(length(min = MIN_TITLE_LENGTH, max = MAX_TITLE_LENGTH))]
