@@ -88,12 +88,19 @@ impl<T: Tunnel> SharedGame<T> {
                 }
             })
     }
+
+    pub fn read_done(&self) -> Option<MappedRwLockReadGuard<'_, Game<T>>> {
+        RwLockReadGuard::try_map(self.0.read(), std::option::Option::as_ref)
+            .ok()
+            .map(|x| MappedRwLockReadGuard::map(x, unbox_box::BoxExt::unbox_ref))
+    }
 }
 
 #[derive_where(Debug, Default)]
 pub struct GameManager<T: Tunnel> {
     games: EnumMap<GameId, SharedGame<T>>,
     game_count: AtomicUsize,
+    all_games: AtomicUsize,
 }
 
 #[derive(Debug, Error)]
@@ -117,6 +124,8 @@ impl<T: Tunnel> GameManager<T> {
                 *game = Some(shared_game);
                 self.game_count
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.all_games
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return game_id;
             }
         }
@@ -139,7 +148,7 @@ impl<T: Tunnel> GameManager<T> {
     }
 
     pub fn alive_check(&self, game_id: GameId) -> Result<bool, GameVanish> {
-        let game = self.get_game(game_id)?;
+        let game = self.get_done_game(game_id)?;
         Ok(!matches!(game.state(), game::State::Done)
             && game.updated().elapsed() <= std::time::Duration::from_secs(60 * 5))
     }
@@ -194,6 +203,13 @@ impl<T: Tunnel> GameManager<T> {
         self.games[game_id].read().ok_or(GameVanish {})
     }
 
+    pub fn get_done_game(
+        &self,
+        game_id: GameId,
+    ) -> Result<MappedRwLockReadGuard<'_, Game<T>>, GameVanish> {
+        self.games[game_id].read_done().ok_or(GameVanish {})
+    }
+
     pub fn remove_game(&self, game_id: GameId) {
         let mut game = self.games[game_id].0.write();
         if let Some(ongoing_game) = game.take() {
@@ -203,7 +219,10 @@ impl<T: Tunnel> GameManager<T> {
         }
     }
 
-    pub fn count(&self) -> usize {
-        self.game_count.load(std::sync::atomic::Ordering::SeqCst)
+    pub fn count(&self) -> (usize, usize) {
+        (
+            self.game_count.load(std::sync::atomic::Ordering::SeqCst),
+            self.all_games.load(std::sync::atomic::Ordering::SeqCst),
+        )
     }
 }
