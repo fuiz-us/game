@@ -96,11 +96,25 @@ impl Leaderboard {
         })
     }
 
-    fn compute_final_summary(&self) -> FinalSummary {
+    fn compute_final_summary(&self, show_real_score: bool) -> FinalSummary {
+        let map_score = |s: u64| {
+            if show_real_score {
+                s
+            } else {
+                s.max(1)
+            }
+        };
+
         let summaries = self
             .slide_summaries
             .iter()
-            .map(|(_, s)| s.points_earned.clone())
+            .map(|(_, s)| {
+                s.points_earned
+                    .clone()
+                    .into_iter()
+                    .map(|(i, s)| (i, map_score(s)))
+                    .collect_vec()
+            })
             .collect_vec();
 
         let summary_mapping: Vec<HashMap<_, _>> = summaries
@@ -108,10 +122,13 @@ impl Leaderboard {
             .map(|s| s.iter().copied().collect())
             .collect_vec();
 
-        let scores_descending = self
-            .slide_summaries
-            .get(self.slide())
-            .map_or(vec![], |s| s.scores_descending.clone());
+        let scores_descending = self.slide_summaries.get(self.slide()).map_or(vec![], |s| {
+            s.scores_descending
+                .clone()
+                .into_iter()
+                .map(|(i, s)| (i, map_score(s)))
+                .collect_vec()
+        });
 
         let id_to_points = |id| {
             summary_mapping
@@ -143,19 +160,19 @@ impl Leaderboard {
         }
     }
 
-    fn final_summary(&self) -> &FinalSummary {
+    fn final_summary(&self, show_real_score: bool) -> &FinalSummary {
         self.final_summary
-            .get_or_init(|| self.compute_final_summary())
+            .get_or_init(|| self.compute_final_summary(show_real_score))
     }
 
-    pub fn host_summary(&self) -> (usize, Vec<(usize, usize)>) {
-        let final_summary = self.final_summary();
+    pub fn host_summary(&self, show_real_score: bool) -> (usize, Vec<(usize, usize)>) {
+        let final_summary = self.final_summary(show_real_score);
 
         (final_summary.mapping.len(), final_summary.stats.clone())
     }
 
-    pub fn player_summary(&self, id: Id) -> Vec<u64> {
-        self.final_summary().mapping.get(&id).map_or(
+    pub fn player_summary(&self, id: Id, show_real_score: bool) -> Vec<u64> {
+        self.final_summary(show_real_score).mapping.get(&id).map_or(
             vec![0; self.slide_summaries.count()],
             std::clone::Clone::clone,
         )

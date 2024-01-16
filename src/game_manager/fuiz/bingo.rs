@@ -270,7 +270,7 @@ impl Slide {
         user_votes
     }
 
-    pub fn receive_message<T: Tunnel>(
+    pub async fn receive_message<T: Tunnel>(
         &self,
         game: &Game<T>,
         _fuiz: &Fuiz,
@@ -292,7 +292,7 @@ impl Slide {
                                 .map(|i| (i, self.points_awarded))
                                 .collect_vec(),
                         );
-                        game.finish_slide();
+                        game.finish_slide().await;
                     }
                 },
                 IncomingHostMessage::Index(u) => {

@@ -382,7 +382,7 @@ impl Slide {
                     SlideState::Answers => self.send_answers_results(game),
                     SlideState::AnswersResults => {
                         self.add_scores(game);
-                        game.finish_slide();
+                        game.finish_slide().await;
                     }
                 }
             }

@@ -106,7 +106,8 @@ impl Slide {
                     .await;
             }
             Self::Bingo(s) => {
-                s.receive_message(game, fuiz, watcher_id, &message, index, count);
+                s.receive_message(game, fuiz, watcher_id, &message, index, count)
+                    .await;
             }
         }
     }

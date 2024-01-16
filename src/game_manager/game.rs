@@ -23,7 +23,8 @@ use super::{
 #[derive(Debug, Clone, Copy)]
 pub enum State {
     WaitingScreen,
-    Slide { index: usize, finished: bool },
+    Slide(usize),
+    Leaderboard(usize),
     Done,
 }
 
@@ -37,6 +38,7 @@ impl State {
 pub struct Options {
     random_names: bool,
     show_answers: bool,
+    no_leaderboard: bool,
 }
 
 pub struct Game<T: Tunnel> {
@@ -175,25 +177,28 @@ impl<T: Tunnel> Game<T> {
     }
 
     pub async fn play(&self) {
-        self.change_state(State::Slide {
-            index: 0,
-            finished: false,
-        });
+        if self.fuiz_config.len() > 0 {
+            self.change_state(State::Slide(0));
+        } else {
+            self.announce_summary();
+        }
         self.fuiz_config.play_slide(self, 0).await;
     }
 
-    pub fn finish_slide(&self) {
-        if let State::Slide {
-            index,
-            finished: false,
-        } = self.state()
-        {
-            self.change_state(State::Slide {
-                index,
-                finished: true,
-            });
+    pub async fn finish_slide(&self) {
+        if let State::Slide(index) = self.state() {
+            if self.options.no_leaderboard {
+                if self.fuiz_config.len() > index + 1 {
+                    self.change_state(State::Slide(index + 1));
+                    self.fuiz_config.play_slide(self, index + 1).await;
+                } else {
+                    self.announce_summary();
+                }
+            } else {
+                self.change_state(State::Leaderboard(index));
 
-            self.announce_leaderboard();
+                self.announce_leaderboard();
+            }
         }
     }
 
@@ -266,7 +271,8 @@ impl<T: Tunnel> Game<T> {
         self.announce_with(|id, vk| match vk {
             ValueKind::Host => Some(
                 UpdateMessage::Summary({
-                    let (player_count, stats) = self.leaderboard.host_summary();
+                    let (player_count, stats) =
+                        self.leaderboard.host_summary(!self.options.no_leaderboard);
 
                     SummaryMessage::Host {
                         stats,
@@ -280,7 +286,9 @@ impl<T: Tunnel> Game<T> {
             ValueKind::Player => Some(
                 UpdateMessage::Summary(SummaryMessage::Player {
                     score: self.score(id),
-                    points: self.leaderboard.player_summary(id),
+                    points: self
+                        .leaderboard
+                        .player_summary(id, !self.options.no_leaderboard),
                     config: self.fuiz_config.clone(),
                 })
                 .into(),
@@ -383,23 +391,19 @@ impl<T: Tunnel> Game<T> {
                         self.play().await;
                     }
                 }
-                State::Slide { index, finished } => {
-                    if finished {
-                        if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
-                            if index + 1 >= self.fuiz_config.len() {
-                                self.announce_summary();
-                            } else {
-                                self.change_state(State::Slide {
-                                    index: index + 1,
-                                    finished: false,
-                                });
-                                self.fuiz_config.play_slide(self, index + 1).await;
-                            }
+                State::Slide(index) => {
+                    self.fuiz_config
+                        .receive_message(self, watcher_id, message, index)
+                        .await;
+                }
+                State::Leaderboard(index) => {
+                    if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
+                        if index + 1 >= self.fuiz_config.len() {
+                            self.announce_summary();
+                        } else {
+                            self.change_state(State::Slide(index + 1));
+                            self.fuiz_config.play_slide(self, index + 1).await;
                         }
-                    } else {
-                        self.fuiz_config
-                            .receive_message(self, watcher_id, message, index)
-                            .await;
                     }
                 }
                 State::Done => {
@@ -424,31 +428,28 @@ impl<T: Tunnel> Game<T> {
     pub fn state_message(&self, watcher_id: Id, watcher_kind: ValueKind) -> super::SyncMessage {
         match self.state() {
             State::WaitingScreen => SyncMessage::WaitingScreen(self.get_waiting_message()).into(),
-            State::Slide { index, finished } => {
-                if finished {
-                    match watcher_kind {
-                        ValueKind::Host | ValueKind::Unassigned => SyncMessage::Leaderboard {
-                            index,
-                            count: self.fuiz_config.len(),
-                            leaderboard: self.leaderboard_message(),
-                        }
-                        .into(),
-                        ValueKind::Player => SyncMessage::Score {
-                            index,
-                            count: self.fuiz_config.len(),
-                            score: self.score(watcher_id),
-                        }
-                        .into(),
-                    }
-                } else {
-                    self.fuiz_config
-                        .state_message(watcher_id, watcher_kind, self, index)
-                        .expect("Index was violated")
+            State::Leaderboard(index) => match watcher_kind {
+                ValueKind::Host | ValueKind::Unassigned => SyncMessage::Leaderboard {
+                    index,
+                    count: self.fuiz_config.len(),
+                    leaderboard: self.leaderboard_message(),
                 }
-            }
+                .into(),
+                ValueKind::Player => SyncMessage::Score {
+                    index,
+                    count: self.fuiz_config.len(),
+                    score: self.score(watcher_id),
+                }
+                .into(),
+            },
+            State::Slide(index) => self
+                .fuiz_config
+                .state_message(watcher_id, watcher_kind, self, index)
+                .expect("Index was violated"),
             State::Done => match watcher_kind {
                 ValueKind::Host => SyncMessage::Summary({
-                    let (player_count, stats) = self.leaderboard.host_summary();
+                    let (player_count, stats) =
+                        self.leaderboard.host_summary(!self.options.no_leaderboard);
                     SummaryMessage::Host {
                         stats,
                         player_count,
@@ -459,7 +460,9 @@ impl<T: Tunnel> Game<T> {
                 .into(),
                 ValueKind::Player => SyncMessage::Summary(SummaryMessage::Player {
                     score: self.score(watcher_id),
-                    points: self.leaderboard.player_summary(watcher_id),
+                    points: self
+                        .leaderboard
+                        .player_summary(watcher_id, !self.options.no_leaderboard),
                     config: self.fuiz_config.clone(),
                 })
                 .into(),
@@ -496,7 +499,7 @@ impl<T: Tunnel> Game<T> {
     fn update_player_with_options(&self, watcher: Id) {
         self.send_state(
             &SyncMessage::Metainfo(MetainfoMessage::Player {
-                score: self.leaderboard.score(watcher).map_or(0, |x| x.points),
+                score: self.score(watcher).map_or(0, |x| x.points),
                 show_answers: self.options.show_answers,
             })
             .into(),
