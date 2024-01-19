@@ -290,6 +290,12 @@ impl Slide {
                                 .get_winners_id(game)
                                 .into_iter()
                                 .map(|i| (i, self.points_awarded))
+                                .into_grouping_map_by(|(id, _)| game.leaderboard_id(*id))
+                                .max_by_key(|_, (_, score)| *score)
+                                .into_iter()
+                                .map(|(id, (_, score))| (id, score))
+                                .chain(game.players().into_iter().map(|id| (id, 0)))
+                                .unique_by(|(id, _)| *id)
                                 .collect_vec(),
                         );
                         game.finish_slide().await;

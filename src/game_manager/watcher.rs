@@ -41,12 +41,37 @@ impl FromStr for Id {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Kinded)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Kinded)]
 #[kinded(derive(Hash, Enum))]
 pub enum Value {
     Unassigned,
     Host,
-    Player(String),
+    Player(PlayerValue),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PlayerValue {
+    Individual {
+        name: String,
+    },
+    Team {
+        team_name: String,
+        team_id: Id,
+        player_index_in_team: usize,
+    },
+}
+
+impl PlayerValue {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Individual { name } => name,
+            Self::Team {
+                team_name,
+                team_id: _,
+                player_index_in_team: _,
+            } => team_name,
+        }
+    }
 }
 
 #[derive_where::derive_where(Default)]

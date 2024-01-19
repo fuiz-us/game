@@ -21,6 +21,7 @@ pub mod game_id;
 pub mod leaderboard;
 pub mod names;
 pub mod session;
+pub mod teams;
 pub mod watcher;
 
 #[derive(Debug, Serialize, Clone, derive_more::From)]

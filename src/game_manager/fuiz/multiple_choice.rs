@@ -102,6 +102,14 @@ pub struct Slide {
 #[serde_with::serde_as]
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
+pub enum PossiblyHidden<T> {
+    Visible(T),
+    Hidden,
+}
+
+#[serde_with::serde_as]
+#[skip_serializing_none]
+#[derive(Debug, Serialize, Clone)]
 pub enum UpdateMessage {
     QuestionAnnouncment {
         index: usize,
@@ -114,10 +122,11 @@ pub enum UpdateMessage {
     AnswersAnnouncement {
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
-        answers: Vec<TextOrMedia>,
+        answers: Vec<PossiblyHidden<TextOrMedia>>,
     },
     AnswersCount(usize),
     AnswersResults {
+        answers: Vec<TextOrMedia>,
         results: Vec<AnswerChoiceResult>,
     },
 }
@@ -141,7 +150,7 @@ pub enum SyncMessage {
         media: Option<Media>,
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
-        answers: Vec<TextOrMedia>,
+        answers: Vec<PossiblyHidden<TextOrMedia>>,
         answered_count: usize,
     },
     AnswersResults {
@@ -225,13 +234,21 @@ impl Slide {
         if self.change_state(SlideState::Question, SlideState::Answers) {
             self.start_timer();
 
-            game.announce(
-                &UpdateMessage::AnswersAnnouncement {
-                    duration: self.time_limit,
-                    answers: self.answers.iter().map(|a| a.content.clone()).collect_vec(),
-                }
-                .into(),
-            );
+            game.announce_with(|id, kind| {
+                Some(
+                    UpdateMessage::AnswersAnnouncement {
+                        duration: self.time_limit,
+                        answers: self.get_answers_for_player(
+                            id,
+                            kind,
+                            game.team_size(id),
+                            game.team_index(id),
+                            game.is_team(),
+                        ),
+                    }
+                    .into(),
+                )
+            });
 
             actix_web::rt::time::sleep(self.time_limit).await;
 
@@ -254,6 +271,11 @@ impl Slide {
             let answer_count = self.user_answers.iter().map(|ua| ua.value().0).counts();
             game.announce(
                 &UpdateMessage::AnswersResults {
+                    answers: self
+                        .answers
+                        .iter()
+                        .map(|a| a.content.to_owned())
+                        .collect_vec(),
                     results: self
                         .answers
                         .iter()
@@ -293,14 +315,62 @@ impl Slide {
                         },
                     )
                 })
+                .into_grouping_map_by(|(id, _)| game.leaderboard_id(*id))
+                .min_by_key(|_, (_, score)| *score)
+                .into_iter()
+                .map(|(id, (_, score))| (id, score))
+                .chain(game.players().into_iter().map(|id| (id, 0)))
+                .unique_by(|(id, _)| *id)
                 .collect_vec(),
         );
     }
 
+    fn get_answers_for_player(
+        &self,
+        _id: Id,
+        watcher_kind: ValueKind,
+        team_size: usize,
+        team_index: usize,
+        is_team: bool,
+    ) -> Vec<PossiblyHidden<TextOrMedia>> {
+        match watcher_kind {
+            ValueKind::Host | ValueKind::Unassigned => {
+                if is_team {
+                    std::iter::repeat(PossiblyHidden::Hidden)
+                        .take(self.answers.len())
+                        .collect_vec()
+                } else {
+                    self.answers
+                        .iter()
+                        .map(|answer_choice| PossiblyHidden::Visible(answer_choice.content.clone()))
+                        .collect_vec()
+                }
+            }
+            ValueKind::Player => match self.answers.len() {
+                0 => Vec::new(),
+                answer_count => {
+                    let adjusted_team_index = team_index % answer_count;
+
+                    self.answers
+                        .iter()
+                        .enumerate()
+                        .map(|(answer_index, answer_choice)| {
+                            if answer_index % team_size.min(answer_count) == adjusted_team_index {
+                                PossiblyHidden::Visible(answer_choice.content.clone())
+                            } else {
+                                PossiblyHidden::Hidden
+                            }
+                        })
+                        .collect_vec()
+                }
+            },
+        }
+    }
+
     pub fn state_message<T: Tunnel>(
         &self,
-        _watcher_id: Id,
-        _watcher_kind: ValueKind,
+        watcher_id: Id,
+        watcher_kind: ValueKind,
         game: &Game<T>,
         index: usize,
         count: usize,
@@ -319,12 +389,13 @@ impl Slide {
                 question: self.title.clone(),
                 media: self.media.clone(),
                 duration: self.time_limit - self.timer().elapsed(),
-                answers: self
-                    .answers
-                    .iter()
-                    .enumerate()
-                    .map(|(_, a)| a.content.clone())
-                    .collect_vec(),
+                answers: self.get_answers_for_player(
+                    watcher_id,
+                    watcher_kind,
+                    game.team_size(watcher_id),
+                    game.team_index(watcher_id),
+                    game.is_team(),
+                ),
                 answered_count: {
                     let left_set: HashSet<_> = game
                         .watchers

@@ -16,6 +16,7 @@ use super::{
     leaderboard::{Leaderboard, ScoreMessage},
     names::{self, Names},
     session::Tunnel,
+    teams::TeamManager,
     watcher::{self, Id, ValueKind, Watchers},
     TruncatedVec,
 };
@@ -23,6 +24,7 @@ use super::{
 #[derive(Debug, Clone, Copy)]
 pub enum State {
     WaitingScreen,
+    TeamDisplay,
     Slide(usize),
     Leaderboard(usize),
     Done,
@@ -34,11 +36,12 @@ impl State {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct Options {
     random_names: bool,
     show_answers: bool,
     no_leaderboard: bool,
+    teams: Option<usize>,
 }
 
 pub struct Game<T: Tunnel> {
@@ -50,6 +53,7 @@ pub struct Game<T: Tunnel> {
     updated: Mutex<Instant>,
     options: Options,
     locked: AtomicBool,
+    team_manager: Option<TeamManager>,
 }
 
 impl<T: Tunnel> Debug for Game<T> {
@@ -107,6 +111,7 @@ pub enum IncomingHostMessage {
 pub enum UpdateMessage {
     IdAssign(Id),
     WaitingScreen(TruncatedVec<String>),
+    TeamDisplay(TruncatedVec<String>),
     NameChoose,
     NameAssign(String),
     NameError(names::Error),
@@ -119,6 +124,7 @@ pub enum UpdateMessage {
 #[derive(Debug, Serialize, Clone)]
 pub enum SyncMessage {
     WaitingScreen(TruncatedVec<String>),
+    TeamDisplay(TruncatedVec<String>),
     Leaderboard {
         index: usize,
         count: usize,
@@ -172,17 +178,29 @@ impl<T: Tunnel> Game<T> {
             state: Mutex::new(State::WaitingScreen),
             updated: Mutex::new(Instant::now()),
             options,
+            team_manager: options.teams.map(TeamManager::new),
             locked: AtomicBool::default(),
         }
     }
 
     pub async fn play(&self) {
         if self.fuiz_config.len() > 0 {
+            if let Some(team_manager) = &self.team_manager {
+                if matches!(self.state(), State::WaitingScreen) {
+                    team_manager.finalize(self, &self.watchers, &self.names);
+                    self.change_state(State::TeamDisplay);
+                    self.announce_host(
+                        &UpdateMessage::TeamDisplay(team_manager.team_names().unwrap_or_default())
+                            .into(),
+                    );
+                    return;
+                }
+            }
             self.change_state(State::Slide(0));
+            self.fuiz_config.play_slide(self, 0).await;
         } else {
             self.announce_summary();
         }
-        self.fuiz_config.play_slide(self, 0).await;
     }
 
     pub async fn finish_slide(&self) {
@@ -245,7 +263,7 @@ impl<T: Tunnel> Game<T> {
     }
 
     pub fn score(&self, watcher_id: Id) -> Option<ScoreMessage> {
-        self.leaderboard.score(watcher_id)
+        self.leaderboard.score(self.leaderboard_id(watcher_id))
     }
 
     pub fn announce_leaderboard(&self) {
@@ -278,7 +296,7 @@ impl<T: Tunnel> Game<T> {
                         stats,
                         player_count,
                         config: self.fuiz_config.clone(),
-                        options: self.options.clone(),
+                        options: self.options,
                     }
                 })
                 .into(),
@@ -288,7 +306,7 @@ impl<T: Tunnel> Game<T> {
                     score: self.score(id),
                     points: self
                         .leaderboard
-                        .player_summary(id, !self.options.no_leaderboard),
+                        .player_summary(self.leaderboard_id(id), !self.options.no_leaderboard),
                     config: self.fuiz_config.clone(),
                 })
                 .into(),
@@ -307,7 +325,7 @@ impl<T: Tunnel> Game<T> {
         self.watchers
             .get_watcher_value(watcher_id)
             .and_then(|v| match v {
-                Value::Player(x) => Some(x),
+                Value::Player(player_value) => Some(player_value.name().to_owned()),
                 _ => None,
             })
     }
@@ -332,11 +350,15 @@ impl<T: Tunnel> Game<T> {
     }
 
     pub fn players(&self) -> Vec<Id> {
-        self.watchers
-            .specific_vec(ValueKind::Player)
-            .into_iter()
-            .map(|(x, _, _)| x)
-            .collect_vec()
+        match &self.team_manager {
+            Some(team_manager) => team_manager.all_ids(),
+            None => self
+                .watchers
+                .specific_vec(ValueKind::Player)
+                .into_iter()
+                .map(|(x, _, _)| x)
+                .collect_vec(),
+        }
     }
 
     pub fn send(&self, message: &super::UpdateMessage, watcher_id: Id) {
@@ -352,6 +374,31 @@ impl<T: Tunnel> Game<T> {
         let watchers = self.watchers.vec().iter().map(|(x, _, _)| *x).collect_vec();
         for watcher in watchers {
             self.remove_watcher_session(watcher);
+        }
+    }
+
+    pub fn leaderboard_id(&self, player_id: Id) -> Id {
+        match &self.team_manager {
+            Some(team_manager) => team_manager.get_team(player_id).unwrap_or(player_id),
+            None => player_id,
+        }
+    }
+
+    pub fn is_team(&self) -> bool {
+        self.options.teams.is_some()
+    }
+
+    pub fn team_size(&self, player_id: Id) -> usize {
+        match &self.team_manager {
+            Some(team_manager) => team_manager.team_size(player_id).unwrap_or(1),
+            None => 1,
+        }
+    }
+
+    pub fn team_index(&self, player_id: Id) -> usize {
+        match &self.team_manager {
+            Some(team_manager) => team_manager.team_index(player_id).unwrap_or(0),
+            None => 0,
         }
     }
 
@@ -386,7 +433,7 @@ impl<T: Tunnel> Game<T> {
                 }
             }
             message => match self.state() {
-                State::WaitingScreen => {
+                State::WaitingScreen | State::TeamDisplay => {
                     if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
                         self.play().await;
                     }
@@ -420,14 +467,22 @@ impl<T: Tunnel> Game<T> {
             .specific_vec(ValueKind::Player)
             .into_iter()
             .filter_map(|(_, _, x)| match x {
-                Value::Player(s) => Some(s),
+                Value::Player(player_value) => Some(player_value.name().to_owned()),
                 _ => None,
             })
+            .unique()
     }
 
     pub fn state_message(&self, watcher_id: Id, watcher_kind: ValueKind) -> super::SyncMessage {
         match self.state() {
             State::WaitingScreen => SyncMessage::WaitingScreen(self.get_waiting_message()).into(),
+            State::TeamDisplay => SyncMessage::TeamDisplay(
+                self.team_manager
+                    .as_ref()
+                    .and_then(|t| t.team_names())
+                    .unwrap_or_default(),
+            )
+            .into(),
             State::Leaderboard(index) => match watcher_kind {
                 ValueKind::Host | ValueKind::Unassigned => SyncMessage::Leaderboard {
                     index,
@@ -454,15 +509,16 @@ impl<T: Tunnel> Game<T> {
                         stats,
                         player_count,
                         config: self.fuiz_config.clone(),
-                        options: self.options.clone(),
+                        options: self.options,
                     }
                 })
                 .into(),
                 ValueKind::Player => SyncMessage::Summary(SummaryMessage::Player {
                     score: self.score(watcher_id),
-                    points: self
-                        .leaderboard
-                        .player_summary(watcher_id, !self.options.no_leaderboard),
+                    points: self.leaderboard.player_summary(
+                        self.leaderboard_id(watcher_id),
+                        !self.options.no_leaderboard,
+                    ),
                     config: self.fuiz_config.clone(),
                 })
                 .into(),
@@ -510,22 +566,34 @@ impl<T: Tunnel> Game<T> {
     fn assign_name(&self, watcher: Id, name: &str) -> Result<(), names::Error> {
         let name = self.names.set_name(watcher, name)?;
 
-        self.watchers
-            .update_watcher_value(watcher, Value::Player(name.clone()));
+        self.watchers.update_watcher_value(
+            watcher,
+            Value::Player(watcher::PlayerValue::Individual {
+                name: name.to_owned(),
+            }),
+        );
 
-        self.send(&UpdateMessage::NameAssign(name).into(), watcher);
-
-        self.update_player_with_options(watcher);
-
-        self.announce_waiting();
-
-        self.send_state(&self.state_message(watcher, ValueKind::Player), watcher);
+        self.update_user_with_name(watcher, name);
 
         Ok(())
     }
 
+    pub fn update_user_with_name(&self, watcher: Id, name: String) {
+        self.send(&UpdateMessage::NameAssign(name.clone()).into(), watcher);
+
+        self.update_player_with_options(watcher);
+
+        if !name.is_empty() {
+            self.announce_waiting();
+        }
+
+        self.send_state(&self.state_message(watcher, ValueKind::Player), watcher);
+    }
+
     fn handle_unassigned(&self, watcher: Id) {
-        if self.options.random_names {
+        if let Some(team_manager) = &self.team_manager {
+            team_manager.add_player(watcher, self, &self.watchers);
+        } else if self.options.random_names {
             loop {
                 let name = petname::petname(2, " ").to_title_case();
                 if self.assign_name(watcher, &name).is_ok() {
@@ -562,8 +630,11 @@ impl<T: Tunnel> Game<T> {
                     watcher_id,
                 );
             }
-            Value::Player(name) => {
-                self.send(&UpdateMessage::NameAssign(name).into(), watcher_id);
+            Value::Player(player_value) => {
+                self.send(
+                    &UpdateMessage::NameAssign(player_value.name().to_owned()).into(),
+                    watcher_id,
+                );
                 self.update_player_with_options(watcher_id);
                 self.send_state(
                     &self.state_message(watcher_id, watcher_value.kind()),

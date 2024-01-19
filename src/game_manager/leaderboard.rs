@@ -101,7 +101,7 @@ impl Leaderboard {
             if show_real_score {
                 s
             } else {
-                s.max(1)
+                s.min(1)
             }
         };
 
@@ -133,7 +133,7 @@ impl Leaderboard {
         let id_to_points = |id| {
             summary_mapping
                 .iter()
-                .map(|h| *h.get(&id).unwrap_or(&0))
+                .map(|h| map_score(*h.get(&id).unwrap_or(&0)))
                 .collect_vec()
         };
 
