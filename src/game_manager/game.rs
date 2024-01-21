@@ -4,6 +4,7 @@ use std::{
 };
 
 use actix_web::rt::time::Instant;
+use garde::Validate;
 use heck::ToTitleCase;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -36,11 +37,15 @@ impl State {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Validate)]
 pub struct Options {
+    #[garde(skip)]
     random_names: bool,
+    #[garde(skip)]
     show_answers: bool,
+    #[garde(skip)]
     no_leaderboard: bool,
+    #[garde(range(min = 1, max = 5))]
     teams: Option<usize>,
 }
 

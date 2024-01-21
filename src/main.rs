@@ -49,7 +49,7 @@ struct AppState {
 struct GameRequest {
     #[garde(dive)]
     config: Fuiz,
-    #[garde(skip)]
+    #[garde(dive)]
     options: Options,
 }
 
