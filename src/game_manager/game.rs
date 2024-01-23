@@ -211,7 +211,7 @@ impl<T: Tunnel> Game<T> {
     pub async fn finish_slide(&self) {
         if let State::Slide(index) = self.state() {
             if self.options.no_leaderboard {
-                if self.fuiz_config.len() > index + 1 {
+                if index + 1 < self.fuiz_config.len() {
                     self.change_state(State::Slide(index + 1));
                     self.fuiz_config.play_slide(self, index + 1).await;
                 } else {
@@ -308,7 +308,11 @@ impl<T: Tunnel> Game<T> {
             ),
             ValueKind::Player => Some(
                 UpdateMessage::Summary(SummaryMessage::Player {
-                    score: self.score(id),
+                    score: if self.options.no_leaderboard {
+                        None
+                    } else {
+                        self.score(id)
+                    },
                     points: self
                         .leaderboard
                         .player_summary(self.leaderboard_id(id), !self.options.no_leaderboard),
@@ -519,7 +523,11 @@ impl<T: Tunnel> Game<T> {
                 })
                 .into(),
                 ValueKind::Player => SyncMessage::Summary(SummaryMessage::Player {
-                    score: self.score(watcher_id),
+                    score: if self.options.no_leaderboard {
+                        None
+                    } else {
+                        self.score(watcher_id)
+                    },
                     points: self.leaderboard.player_summary(
                         self.leaderboard_id(watcher_id),
                         !self.options.no_leaderboard,

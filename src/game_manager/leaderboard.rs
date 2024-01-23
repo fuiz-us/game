@@ -119,7 +119,11 @@ impl Leaderboard {
 
         let summary_mapping: Vec<HashMap<_, _>> = summaries
             .iter()
-            .map(|s| s.iter().copied().collect())
+            .map(|s| {
+                s.iter()
+                    .map(|(id, points)| (*id, map_score(*points)))
+                    .collect()
+            })
             .collect_vec();
 
         let scores_descending = self.slide_summaries.get(self.slide()).map_or(vec![], |s| {
