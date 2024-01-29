@@ -13,3 +13,5 @@ This is the backend component. It can be run with:
 ```
 cargo run
 ```
+
+([demo website status page](https://status.fuiz.us/))
