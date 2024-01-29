@@ -56,7 +56,7 @@ impl Enum for GameId {
     }
 
     fn into_usize(self) -> usize {
-        usize::from(self.0 - MIN_VALUE)
+        usize::from(self.0.saturating_sub(MIN_VALUE))
     }
 }
 
