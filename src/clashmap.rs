@@ -1,6 +1,7 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, vec::IntoIter};
 
 use dashmap::{mapref::entry::Entry, DashMap};
+use itertools::Itertools;
 
 #[derive(Clone)]
 #[derive_where::derive_where(Default)]
@@ -16,25 +17,15 @@ where
     }
 }
 
-pub struct Iter<'a, K, V, S, M> {
-    inner: dashmap::iter::Iter<'a, K, V, S, M>,
+pub struct Iter<K, V> {
+    inner: IntoIter<(K, V)>,
 }
 
-impl<
-        'a,
-        K: Eq + std::hash::Hash + Clone,
-        V: Clone,
-        S: 'a + std::hash::BuildHasher + Clone,
-        M: dashmap::Map<'a, K, V, S>,
-    > Iterator for Iter<'a, K, V, S, M>
-{
+impl<K: Eq + std::hash::Hash + Clone, V: Clone> Iterator for Iter<K, V> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|v| {
-            let (k, v) = v.pair();
-            (k.to_owned(), v.to_owned())
-        })
+        self.inner.next()
     }
 }
 
@@ -63,9 +54,14 @@ where
         self.0.remove(key)
     }
 
-    pub fn iter(&self) -> Iter<'_, K, V, std::collections::hash_map::RandomState, DashMap<K, V>> {
+    pub fn iter(&self) -> Iter<K, V> {
         Iter {
-            inner: self.0.iter(),
+            inner: self
+                .0
+                .iter()
+                .map(|e| (e.key().clone(), e.value().clone()))
+                .collect_vec()
+                .into_iter(),
         }
     }
 
