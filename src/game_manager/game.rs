@@ -17,7 +17,7 @@ use super::{
     leaderboard::{Leaderboard, ScoreMessage},
     names::{self, Names},
     session::Tunnel,
-    teams::TeamManager,
+    teams::{self, TeamManager},
     watcher::{self, Id, ValueKind, Watchers},
     TruncatedVec,
 };
@@ -174,10 +174,10 @@ pub struct LeaderboardMessage {
 }
 
 impl<T: Tunnel> Game<T> {
-    pub fn new(fuiz: Fuiz, options: Options) -> Self {
+    pub fn new(fuiz: Fuiz, options: Options, host_id: Id) -> Self {
         Self {
             fuiz_config: fuiz,
-            watchers: Watchers::default(),
+            watchers: Watchers::with_host_id(host_id),
             names: Names::default(),
             leaderboard: Leaderboard::default(),
             state: Mutex::new(State::WaitingScreen),
@@ -488,7 +488,7 @@ impl<T: Tunnel> Game<T> {
             State::TeamDisplay => SyncMessage::TeamDisplay(
                 self.team_manager
                     .as_ref()
-                    .and_then(|t| t.team_names())
+                    .and_then(teams::TeamManager::team_names)
                     .unwrap_or_default(),
             )
             .into(),
@@ -581,18 +581,16 @@ impl<T: Tunnel> Game<T> {
 
         self.watchers.update_watcher_value(
             watcher,
-            Value::Player(watcher::PlayerValue::Individual {
-                name: name.to_owned(),
-            }),
+            Value::Player(watcher::PlayerValue::Individual { name: name.clone() }),
         );
 
-        self.update_user_with_name(watcher, name);
+        self.update_user_with_name(watcher, &name);
 
         Ok(())
     }
 
-    pub fn update_user_with_name(&self, watcher: Id, name: String) {
-        self.send(&UpdateMessage::NameAssign(name.clone()).into(), watcher);
+    pub fn update_user_with_name(&self, watcher: Id, name: &str) {
+        self.send(&UpdateMessage::NameAssign(name.to_string()).into(), watcher);
 
         self.update_player_with_options(watcher);
 
@@ -616,10 +614,6 @@ impl<T: Tunnel> Game<T> {
         } else {
             self.send(&UpdateMessage::NameChoose.into(), watcher);
         }
-    }
-
-    pub fn reserve_host(&self, watcher: Id) {
-        self.watchers.reserve_watcher(watcher, Value::Host);
     }
 
     pub fn update_session(&self, watcher_id: Id, session: T) {

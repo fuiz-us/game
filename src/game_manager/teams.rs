@@ -91,7 +91,7 @@ impl TeamManager {
 
                     let team_name = loop {
                         match names.set_name(team_id, &petname::petname(2, " ").to_title_case()) {
-                            Ok(name) => break name,
+                            Ok(unique_name) => break unique_name,
                             Err(_) => continue,
                         };
                     };
@@ -108,11 +108,11 @@ impl TeamManager {
                                 }),
                             );
 
-                            game.update_user_with_name(player_id, team_name.clone());
+                            game.update_user_with_name(player_id, &team_name);
                         },
                     );
                     self.team_to_players
-                        .insert(team_id, boxcar::Vec::from_iter(players.iter().copied()));
+                        .insert(team_id, players.iter().copied().collect());
 
                     (team_id, team_name)
                 })
@@ -140,7 +140,7 @@ impl TeamManager {
         match self.teams.get() {
             None => {
                 self.pending_players.push(player_id);
-                game.update_user_with_name(player_id, "".to_owned());
+                game.update_user_with_name(player_id, "");
             }
             Some(teams) => {
                 let next_index = self
@@ -173,7 +173,7 @@ impl TeamManager {
                     }),
                 );
 
-                game.update_user_with_name(player_id, team_name.clone());
+                game.update_user_with_name(player_id, team_name);
             }
         }
     }

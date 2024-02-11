@@ -8,7 +8,10 @@ use serde_with::{DeserializeFromStr, SerializeDisplay};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{clashmap::ClashMap, clashset::ClashSet};
+use crate::{
+    clashmap::ClashMap,
+    clashset::{self, ClashSet},
+};
 
 use super::{session::Tunnel, SyncMessage, UpdateMessage};
 
@@ -92,10 +95,25 @@ pub enum Error {
 impl actix_web::error::ResponseError for Error {}
 
 impl<T: Tunnel> Watchers<T> {
+    pub fn with_host_id(host_id: Id) -> Self {
+        Self {
+            sessions: ClashMap::default(),
+            mapping: {
+                let map = ClashMap::default();
+                map.insert(host_id, Value::Host);
+                map
+            },
+            reverse_mapping: {
+                let map: EnumMap<ValueKind, ClashSet<Id>> = EnumMap::default();
+                map[ValueKind::Host].insert(host_id);
+                map
+            },
+        }
+    }
     pub fn vec(&self) -> Vec<(Id, T, Value)> {
         self.reverse_mapping
             .values()
-            .flat_map(|x| x.iter())
+            .flat_map(clashset::ClashSet::vec)
             .filter_map(|x| match (self.sessions.get(&x), self.mapping.get(&x)) {
                 (Some(t), Some(v)) => Some((x, t, v)),
                 _ => None,
@@ -105,7 +123,8 @@ impl<T: Tunnel> Watchers<T> {
 
     pub fn specific_vec(&self, filter: ValueKind) -> Vec<(Id, T, Value)> {
         self.reverse_mapping[filter]
-            .iter()
+            .vec()
+            .into_iter()
             .filter_map(|x| match (self.sessions.get(&x), self.mapping.get(&x)) {
                 (Some(t), Some(v)) => Some((x, t, v)),
                 _ => None,
@@ -162,12 +181,6 @@ impl<T: Tunnel> Watchers<T> {
 
     pub fn has_watcher(&self, watcher_id: Id) -> bool {
         self.mapping.contains_key(&watcher_id)
-    }
-
-    pub fn reserve_watcher(&self, watcher_id: Id, watcher_value: Value) {
-        let kind = watcher_value.kind();
-        self.mapping.insert(watcher_id, watcher_value);
-        self.reverse_mapping[kind].insert(watcher_id);
     }
 
     pub fn remove_watcher_session(&self, watcher_id: &Id) {

@@ -271,11 +271,7 @@ impl Slide {
             let answer_count = self.user_answers.iter().map(|ua| ua.value().0).counts();
             game.announce(
                 &UpdateMessage::AnswersResults {
-                    answers: self
-                        .answers
-                        .iter()
-                        .map(|a| a.content.to_owned())
-                        .collect_vec(),
+                    answers: self.answers.iter().map(|a| a.content.clone()).collect_vec(),
                     results: self
                         .answers
                         .iter()

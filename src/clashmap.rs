@@ -1,4 +1,4 @@
-use std::{fmt::Debug, vec::IntoIter};
+use std::fmt::Debug;
 
 use dashmap::{mapref::entry::Entry, DashMap};
 use itertools::Itertools;
@@ -14,18 +14,6 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
-    }
-}
-
-pub struct Iter<K, V> {
-    inner: IntoIter<(K, V)>,
-}
-
-impl<K: Eq + std::hash::Hash + Clone, V: Clone> Iterator for Iter<K, V> {
-    type Item = (K, V);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
     }
 }
 
@@ -54,15 +42,11 @@ where
         self.0.remove(key)
     }
 
-    pub fn iter(&self) -> Iter<K, V> {
-        Iter {
-            inner: self
-                .0
-                .iter()
-                .map(|e| (e.key().clone(), e.value().clone()))
-                .collect_vec()
-                .into_iter(),
-        }
+    pub fn vec(&self) -> Vec<(K, V)> {
+        self.0
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect_vec()
     }
 
     pub fn insert_if_vacant(&self, key: K, value: V) -> Option<(K, V)> {

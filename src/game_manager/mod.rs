@@ -111,8 +111,8 @@ pub struct GameVanish {}
 impl actix_web::error::ResponseError for GameVanish {}
 
 impl<T: Tunnel> GameManager<T> {
-    pub fn add_game(&self, fuiz: Fuiz, options: Options) -> GameId {
-        let shared_game = Box::new(Game::new(fuiz, options));
+    pub fn add_game(&self, fuiz: Fuiz, options: Options, host_id: Id) -> GameId {
+        let shared_game = Box::new(Game::new(fuiz, options, host_id));
 
         loop {
             let game_id = GameId::new();
@@ -127,14 +127,10 @@ impl<T: Tunnel> GameManager<T> {
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 self.all_games
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
                 return game_id;
             }
         }
-    }
-
-    pub fn reserve_host(&self, game_id: GameId, watcher_id: Id) -> Result<(), GameVanish> {
-        self.get_game(game_id)?.reserve_host(watcher_id);
-        Ok(())
     }
 
     pub fn add_unassigned(

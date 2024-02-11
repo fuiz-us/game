@@ -161,7 +161,7 @@ impl Slide {
                                 rng.choose_multiple(0..self.answers.len(), self.board_size)
                             }
                         },
-                        crossed: self.crossed.iter().collect_vec(),
+                        crossed: self.crossed.vec(),
                         user_votes: self.get_user_votes(),
                     }
                     .into(),
@@ -249,7 +249,7 @@ impl Slide {
                         rng.choose_multiple(0..self.answers.len(), self.board_size)
                     }
                 },
-                crossed: self.crossed.iter().collect_vec(),
+                crossed: self.crossed.vec(),
                 user_votes: self.get_user_votes(),
             },
             SlideState::Winners => SyncMessage::Winners {
@@ -262,7 +262,7 @@ impl Slide {
 
     fn get_user_votes(&self) -> Vec<usize> {
         let mut user_votes = vec![0; self.answers.len()];
-        for (i, users) in self.user_votes.clone().iter() {
+        for (i, users) in self.user_votes.clone().vec() {
             if let Some(u) = user_votes.get_mut(i) {
                 *u = users.len();
             }
@@ -306,7 +306,7 @@ impl Slide {
                     let winners = self.get_winners(game);
                     game.announce(
                         &UpdateMessage::Cross {
-                            crossed: self.crossed.iter().collect_vec(),
+                            crossed: self.crossed.vec(),
                         }
                         .into(),
                     );

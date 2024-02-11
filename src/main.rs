@@ -59,11 +59,9 @@ async fn add(
     request: garde_actix_web::web::Json<GameRequest>,
 ) -> impl Responder {
     let GameRequest { config, options } = request.into_inner();
-    let game_id = data.game_manager.add_game(config, options);
 
     let host_id = Id::new();
-
-    data.game_manager.reserve_host(game_id, host_id)?;
+    let game_id = data.game_manager.add_game(config, options, host_id);
 
     let stale_data = data;
 
@@ -144,7 +142,7 @@ async fn watch(
 
     data.game_manager.exists(game_id)?;
 
-    let own_session = game_manager::session::Session::new(session.clone());
+    let own_session = Session::new(session.clone());
 
     let mismatch = websocket_heartbeat_verifier(session.clone());
 
