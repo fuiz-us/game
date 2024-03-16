@@ -147,7 +147,7 @@ impl<T: Tunnel> GameManager<T> {
     pub fn alive_check(&self, game_id: GameId) -> Result<bool, GameVanish> {
         let game = self.get_done_game(game_id)?;
         Ok(!matches!(game.state(), game::State::Done)
-            && game.updated().elapsed() <= std::time::Duration::from_secs(60 * 5))
+            && game.updated().elapsed() <= std::time::Duration::from_secs(60 * 60))
     }
 
     pub fn watcher_exists(&self, game_id: GameId, watcher_id: Id) -> Result<bool, GameVanish> {
