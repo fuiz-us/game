@@ -3,8 +3,9 @@ use std::sync::atomic::AtomicUsize;
 use derive_where::derive_where;
 use enum_map::EnumMap;
 use itertools::Itertools;
+use jiden::StateSaver;
 use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use self::{
@@ -97,11 +98,28 @@ impl<T: Tunnel> SharedGame<T> {
     }
 }
 
-#[derive_where(Debug, Default)]
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub struct Statistics {
+    all_games: AtomicUsize,
+    game_count: AtomicUsize,
+}
+
+#[derive_where(Debug)]
 pub struct GameManager<T: Tunnel> {
     games: EnumMap<GameId, SharedGame<T>>,
-    game_count: AtomicUsize,
-    all_games: AtomicUsize,
+    statistics: Statistics,
+    state_saver: StateSaver<Statistics>,
+}
+
+impl<T: Tunnel> Default for GameManager<T> {
+    fn default() -> Self {
+        let state_saver = StateSaver::new("stats.txt");
+        Self {
+            games: EnumMap::default(),
+            statistics: state_saver.state().unwrap_or_default(),
+            state_saver,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -123,10 +141,13 @@ impl<T: Tunnel> GameManager<T> {
 
             if game.is_none() {
                 *game = Some(shared_game);
-                self.game_count
+                self.statistics
+                    .game_count
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                self.all_games
+                self.statistics
+                    .all_games
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.state_saver.save(&self.statistics);
 
                 return game_id;
             }
@@ -210,16 +231,22 @@ impl<T: Tunnel> GameManager<T> {
     pub fn remove_game(&self, game_id: GameId) {
         let mut game = self.games[game_id].0.write();
         if let Some(ongoing_game) = game.take() {
-            self.game_count
+            self.statistics
+                .game_count
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            self.state_saver.save(&self.statistics);
             ongoing_game.mark_as_done();
         }
     }
 
     pub fn count(&self) -> (usize, usize) {
         (
-            self.game_count.load(std::sync::atomic::Ordering::SeqCst),
-            self.all_games.load(std::sync::atomic::Ordering::SeqCst),
+            self.statistics
+                .game_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            self.statistics
+                .all_games
+                .load(std::sync::atomic::Ordering::SeqCst),
         )
     }
 }
