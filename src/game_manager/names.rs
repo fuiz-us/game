@@ -9,7 +9,8 @@ use super::watcher::Id;
 #[derive(Debug, Default, Clone)]
 pub struct Names {
     mapping: ClashMap<Id, String>,
-    existing_names: ClashSet<String>,
+    reverse_mapping: ClashMap<String, Id>,
+    existing: ClashSet<String>,
 }
 
 #[derive(Error, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,15 +45,19 @@ impl Names {
         if name.is_inappropriate() {
             return Err(Error::Sinful);
         }
-        if !self.existing_names.insert(name.to_owned()) {
+        if !self.existing.insert(name.to_owned()) {
             return Err(Error::Used);
         }
-        match self.mapping.insert_if_vacant(id, name.to_owned()) {
-            Some(_) => {
-                self.existing_names.remove(name);
-                Err(Error::Assigned)
-            }
-            None => Ok(name.to_owned()),
+        if self.mapping.insert_if_vacant(id, name.to_owned()).is_some() {
+            self.existing.remove(name);
+            Err(Error::Assigned)
+        } else {
+            self.reverse_mapping.insert(name.to_owned(), id);
+            Ok(name.to_owned())
         }
+    }
+
+    pub fn get_id(&self, name: &str) -> Option<Id> {
+        self.reverse_mapping.get(name)
     }
 }

@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{borrow::Borrow, fmt::Debug};
 
 use dashmap::{mapref::entry::Entry, DashMap};
 use itertools::Itertools;
@@ -22,7 +22,11 @@ where
     K: Eq + std::hash::Hash + Clone,
     V: Clone,
 {
-    pub fn get(&self, key: &K) -> Option<V> {
+    pub fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: std::hash::Hash + Eq + ?Sized,
+    {
         self.0.get(key).map(|v| v.to_owned())
     }
 

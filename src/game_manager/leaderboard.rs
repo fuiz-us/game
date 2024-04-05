@@ -187,7 +187,7 @@ impl Leaderboard {
         summary.and_then(|s| {
             s.mapping
                 .get(&watcher_id)
-                .map(std::clone::Clone::clone)
+                .copied()
                 .map(|(points, position)| ScoreMessage { points, position })
         })
     }

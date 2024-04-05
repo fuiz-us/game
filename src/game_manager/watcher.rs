@@ -59,6 +59,7 @@ pub enum PlayerValue {
     },
     Team {
         team_name: String,
+        individual_name: String,
         team_id: Id,
         player_index_in_team: usize,
     },
@@ -69,10 +70,11 @@ impl PlayerValue {
         match self {
             Self::Individual { name } => name,
             Self::Team {
-                team_name,
+                team_name: _,
+                individual_name,
                 team_id: _,
                 player_index_in_team: _,
-            } => team_name,
+            } => individual_name,
         }
     }
 }
@@ -181,6 +183,10 @@ impl<T: Tunnel> Watchers<T> {
 
     pub fn has_watcher(&self, watcher_id: Id) -> bool {
         self.mapping.contains_key(&watcher_id)
+    }
+
+    pub fn is_alive(&self, watcher_id: Id) -> bool {
+        self.sessions.contains_key(&watcher_id)
     }
 
     pub fn remove_watcher_session(&self, watcher_id: &Id) {
