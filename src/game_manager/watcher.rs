@@ -21,7 +21,7 @@ use super::{session::Tunnel, SyncMessage, UpdateMessage};
 pub struct Id(Uuid);
 
 impl Id {
-    pub fn get_seed(&self) -> u64 {
+    pub fn _get_seed(&self) -> u64 {
         self.0.as_u64_pair().0
     }
 
@@ -112,6 +112,7 @@ impl<T: Tunnel> Watchers<T> {
             },
         }
     }
+
     pub fn vec(&self) -> Vec<(Id, T, Value)> {
         self.reverse_mapping
             .values()
@@ -209,5 +210,35 @@ impl<T: Tunnel> Watchers<T> {
         };
 
         session.send_state(message);
+    }
+
+    pub fn get_name(&self, watcher_id: Id) -> Option<String> {
+        self.get_watcher_value(watcher_id).and_then(|v| match v {
+            Value::Player(player_value) => Some(player_value.name().to_owned()),
+            _ => None,
+        })
+    }
+
+    pub fn announce_with<F>(&self, sender: F)
+    where
+        F: Fn(Id, ValueKind) -> Option<super::UpdateMessage>,
+    {
+        for (watcher, session, v) in self.vec() {
+            let Some(message) = sender(watcher, v.kind()) else {
+                continue;
+            };
+
+            session.send_message(&message);
+        }
+    }
+
+    pub fn announce(&self, message: &super::UpdateMessage) {
+        self.announce_with(|_, _| Some(message.to_owned()));
+    }
+
+    pub fn announce_specific(&self, filter: ValueKind, message: &super::UpdateMessage) {
+        for (_, session, _) in self.specific_vec(filter) {
+            session.send_message(message);
+        }
     }
 }

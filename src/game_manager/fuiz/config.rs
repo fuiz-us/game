@@ -9,7 +9,6 @@ use crate::game_manager::{
 
 use super::{
     super::game::{Game, IncomingMessage},
-    bingo,
     media::Media,
     multiple_choice,
 };
@@ -27,6 +26,7 @@ pub enum TextOrMedia {
     Text(#[garde(length(max = MAX_TEXT_LENGTH))] String),
 }
 
+/// A fuiz configuration, title is unused
 #[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub struct Fuiz {
     #[garde(length(max = MAX_TITLE_LENGTH))]
@@ -38,7 +38,6 @@ pub struct Fuiz {
 #[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub enum Slide {
     MultipleChoice(#[garde(dive)] multiple_choice::Slide),
-    Bingo(#[garde(dive)] bingo::Slide),
 }
 
 impl Fuiz {
@@ -85,9 +84,6 @@ impl Slide {
             Self::MultipleChoice(s) => {
                 s.play(game, fuiz, index, count).await;
             }
-            Self::Bingo(s) => {
-                s.play(game, fuiz, index, count);
-            }
         }
     }
 
@@ -103,10 +99,6 @@ impl Slide {
         match self {
             Self::MultipleChoice(s) => {
                 s.receive_message(game, fuiz, watcher_id, message, index, count)
-                    .await;
-            }
-            Self::Bingo(s) => {
-                s.receive_message(game, fuiz, watcher_id, &message, index, count)
                     .await;
             }
         }
@@ -128,9 +120,6 @@ impl Slide {
                 index,
                 count,
             )),
-            Self::Bingo(s) => {
-                SyncMessage::Bingo(s.state_message(watcher_id, watcher_kind, game, index, count))
-            }
         }
     }
 }

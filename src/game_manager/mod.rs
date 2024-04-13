@@ -28,7 +28,6 @@ pub mod watcher;
 #[derive(Debug, Serialize, Clone, derive_more::From)]
 pub enum SyncMessage {
     Game(game::SyncMessage),
-    Bingo(fuiz::bingo::SyncMessage),
     MultipleChoice(fuiz::multiple_choice::SyncMessage),
 }
 
@@ -41,7 +40,6 @@ impl SyncMessage {
 #[derive(Debug, Serialize, Clone, derive_more::From)]
 pub enum UpdateMessage {
     Game(game::UpdateMessage),
-    Bingo(fuiz::bingo::UpdateMessage),
     MultipleChoice(fuiz::multiple_choice::UpdateMessage),
 }
 
@@ -172,7 +170,7 @@ impl<T: Tunnel> GameManager<T> {
     }
 
     pub fn watcher_exists(&self, game_id: GameId, watcher_id: Id) -> Result<bool, GameVanish> {
-        Ok(self.get_game(game_id)?.has_watcher(watcher_id))
+        Ok(self.get_game(game_id)?.watchers.has_watcher(watcher_id))
     }
 
     pub async fn receive_message(
@@ -192,7 +190,9 @@ impl<T: Tunnel> GameManager<T> {
         game_id: GameId,
         watcher_id: Id,
     ) -> Result<(), GameVanish> {
-        self.get_game(game_id)?.remove_watcher_session(watcher_id);
+        self.get_game(game_id)?
+            .watchers
+            .remove_watcher_session(&watcher_id);
         Ok(())
     }
 

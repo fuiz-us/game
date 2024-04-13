@@ -46,7 +46,7 @@ where
         self.0.remove(key)
     }
 
-    pub fn vec(&self) -> Vec<(K, V)> {
+    pub fn _vec(&self) -> Vec<(K, V)> {
         self.0
             .iter()
             .map(|e| (e.key().clone(), e.value().clone()))
@@ -69,7 +69,7 @@ where
     K: Eq + std::hash::Hash + Clone,
     V: Clone + Default,
 {
-    pub fn modify_entry_or_default<F>(&self, key: K, f: F)
+    pub fn _modify_entry_or_default<F>(&self, key: K, f: F)
     where
         F: Fn(&mut V),
     {

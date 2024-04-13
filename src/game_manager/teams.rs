@@ -221,13 +221,13 @@ impl TeamManager {
                 player_id,
                 watcher::Value::Player(watcher::PlayerValue::Team {
                     team_name: team_name.to_owned(),
-                    individual_name: game.get_name(player_id).unwrap_or_default(),
+                    individual_name: game.watchers.get_name(player_id).unwrap_or_default(),
                     team_id: *team_id,
                     player_index_in_team: player_index,
                 }),
             );
 
-            game.update_user_with_name(player_id, team_name);
+            game.update_player_with_name(player_id, team_name);
         }
     }
 
@@ -245,17 +245,19 @@ impl TeamManager {
         })
     }
 
-    pub fn team_index(&self, player_id: Id) -> Option<usize> {
+    pub fn team_index<F: Fn(Id) -> bool>(&self, player_id: Id, f: F) -> Option<usize> {
         self.get_team(player_id)
             .and_then(|team_id| self.team_to_players.get(&team_id))
             .and_then(|p| {
-                p.iter().find_map(|(index, current_player_id)| {
-                    if *current_player_id == player_id {
-                        Some(index)
-                    } else {
-                        None
-                    }
-                })
+                p.iter().filter(|(_, id)| f(**id)).enumerate().find_map(
+                    |(index, (_, current_player_id))| {
+                        if *current_player_id == player_id {
+                            Some(index)
+                        } else {
+                            None
+                        }
+                    },
+                )
             })
     }
 

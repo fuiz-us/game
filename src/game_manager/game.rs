@@ -23,9 +23,12 @@ use super::{
     TruncatedVec,
 };
 
+/// Game Phase
 #[derive(Debug, Clone, Copy)]
 pub enum State {
+    /// A waiting screen where current players are displayed
     WaitingScreen,
+    /// (TEAM ONLY): A waiting screen where current teams are displayed
     TeamDisplay,
     Slide(usize),
     Leaderboard(usize),
@@ -40,16 +43,20 @@ impl State {
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Validate)]
 pub struct TeamOptions {
+    /// maximum initial team size
     #[garde(range(min = 1, max = 5))]
     size: usize,
+    /// whether to assign people to random teams or let them choose their preferences
     #[garde(skip)]
     assign_random: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Validate)]
 pub struct Options {
+    /// using random names for players (skips choosing names)
     #[garde(skip)]
     random_names: bool,
+    /// whether to show answers on players devices or not
     #[garde(skip)]
     show_answers: bool,
     #[garde(skip)]
@@ -58,14 +65,22 @@ pub struct Options {
     teams: Option<TeamOptions>,
 }
 
+/// one game session
 pub struct Game<T: Tunnel> {
+    /// configuration to create the game
     fuiz_config: Fuiz,
+    /// set of watchers listening to message actions
     pub watchers: Watchers<T>,
+    /// mapping of names used in the game
     names: Names,
+    /// score mapping from players/teams to score
     pub leaderboard: Leaderboard,
+    /// current phase of the game
     state: Mutex<State>,
+    /// last time game updated
     updated: Mutex<Instant>,
     options: Options,
+    /// indicates if a game is locked so new players aren't able to enter
     locked: AtomicBool,
     team_manager: Option<TeamManager>,
 }
@@ -197,6 +212,153 @@ pub struct LeaderboardMessage {
     pub prior: TruncatedVec<(String, u64)>,
 }
 
+// Convenience methods
+impl<T: Tunnel> Game<T> {
+    fn set_state(&self, game_state: State) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = game_state;
+        }
+        self.update();
+    }
+
+    pub fn state(&self) -> State {
+        if let Ok(state) = self.state.lock() {
+            *state
+        } else {
+            State::Done
+        }
+    }
+
+    fn update(&self) {
+        if let Ok(mut updated) = self.updated.lock() {
+            *updated = Instant::now();
+        }
+    }
+
+    pub fn updated(&self) -> Instant {
+        if let Ok(updated) = self.updated.lock() {
+            *updated
+        } else {
+            Instant::now()
+        }
+    }
+
+    fn locked(&self) -> bool {
+        self.locked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn set_locked(&self, value: bool) {
+        self.locked
+            .store(value, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn is_team(&self) -> bool {
+        self.options.teams.is_some()
+    }
+
+    fn score(&self, watcher_id: Id) -> Option<ScoreMessage> {
+        self.leaderboard.score(self.leaderboard_id(watcher_id))
+    }
+
+    pub fn players_ids(&self) -> Vec<Id> {
+        match &self.team_manager {
+            Some(team_manager) => team_manager.all_ids(),
+            None => self
+                .watchers
+                .specific_vec(ValueKind::Player)
+                .into_iter()
+                .map(|(x, _, _)| x)
+                .collect_vec(),
+        }
+    }
+
+    pub fn leaderboard_id(&self, player_id: Id) -> Id {
+        match &self.team_manager {
+            Some(team_manager) => team_manager.get_team(player_id).unwrap_or(player_id),
+            None => player_id,
+        }
+    }
+
+    pub fn team_size(&self, player_id: Id) -> usize {
+        match &self.team_manager {
+            Some(team_manager) => team_manager.team_members(player_id).map_or(1, |members| {
+                members
+                    .into_iter()
+                    .filter(|id| self.watchers.is_alive(*id))
+                    .collect_vec()
+                    .len()
+            }),
+            None => 1,
+        }
+    }
+
+    pub fn team_index(&self, player_id: Id) -> usize {
+        match &self.team_manager {
+            Some(team_manager) => team_manager
+                .team_index(player_id, |id| self.watchers.has_watcher(id))
+                .unwrap_or(0),
+            None => 0,
+        }
+    }
+
+    fn choose_teammates_message(&self, watcher: Id, team_manager: &TeamManager) -> UpdateMessage {
+        let pref: HashSet<_> = team_manager
+            .get_preferences(watcher)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        UpdateMessage::ChooseTeammates {
+            max_selection: team_manager.optimal_size,
+            available: self
+                .watchers
+                .specific_vec(ValueKind::Player)
+                .into_iter()
+                .filter_map(|(id, _, _)| Some((id, self.watchers.get_name(id)?)))
+                .map(|(id, name)| (name, pref.contains(&id)))
+                .collect(),
+        }
+    }
+
+    fn waiting_screen_names(&self) -> TruncatedVec<String> {
+        const LIMIT: usize = 50;
+
+        if let Some(team_manager) = &self.team_manager {
+            if matches!(self.state(), State::TeamDisplay) {
+                return team_manager.team_names().unwrap_or_default();
+            }
+        }
+
+        let player_names = self
+            .watchers
+            .specific_vec(ValueKind::Player)
+            .into_iter()
+            .filter_map(|(_, _, x)| match x {
+                Value::Player(player_value) => Some(player_value.name().to_owned()),
+                _ => None,
+            })
+            .unique();
+
+        TruncatedVec::new(
+            player_names,
+            LIMIT,
+            self.watchers.specific_count(ValueKind::Player),
+        )
+    }
+
+    fn leaderboard_message(&self) -> LeaderboardMessage {
+        let [current, prior] = self.leaderboard.scores_descending();
+
+        let id_map = |i| self.names.get_name(&i).unwrap_or("Unknown".to_owned());
+
+        let id_score_map = |(id, s)| (id_map(id), s);
+
+        LeaderboardMessage {
+            current: current.map(id_score_map),
+            prior: prior.map(id_score_map),
+        }
+    }
+}
+
 impl<T: Tunnel> Game<T> {
     pub fn new(fuiz: Fuiz, options: Options, host_id: Id) -> Self {
         Self {
@@ -217,13 +379,14 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
+    /// starts the game
     pub async fn play(&self) {
         if self.fuiz_config.len() > 0 {
             if let Some(team_manager) = &self.team_manager {
                 if matches!(self.state(), State::WaitingScreen) {
                     team_manager.finalize(self, &self.watchers, &self.names);
-                    self.change_state(State::TeamDisplay);
-                    self.announce_with(|id, kind| {
+                    self.set_state(State::TeamDisplay);
+                    self.watchers.announce_with(|id, kind| {
                         Some(match kind {
                             ValueKind::Player => UpdateMessage::FindTeam(
                                 team_manager
@@ -241,97 +404,49 @@ impl<T: Tunnel> Game<T> {
                     return;
                 }
             }
-            self.change_state(State::Slide(0));
+            self.set_state(State::Slide(0));
             self.fuiz_config.play_slide(self, 0).await;
         } else {
             self.announce_summary();
         }
     }
 
+    /// mark the current slide as done
     pub async fn finish_slide(&self) {
         if let State::Slide(index) = self.state() {
             if self.options.no_leaderboard {
                 if index + 1 < self.fuiz_config.len() {
-                    self.change_state(State::Slide(index + 1));
+                    self.set_state(State::Slide(index + 1));
                     self.fuiz_config.play_slide(self, index + 1).await;
                 } else {
                     self.announce_summary();
                 }
             } else {
-                self.change_state(State::Leaderboard(index));
+                self.set_state(State::Leaderboard(index));
 
-                self.announce_leaderboard();
+                let leaderboard_message = self.leaderboard_message();
+
+                self.watchers.announce_with(|watcher_id, watcher_kind| {
+                    Some(match watcher_kind {
+                        ValueKind::Host | ValueKind::Unassigned => UpdateMessage::Leaderboard {
+                            leaderboard: leaderboard_message.clone(),
+                        }
+                        .into(),
+                        ValueKind::Player => UpdateMessage::Score {
+                            score: self.score(watcher_id),
+                        }
+                        .into(),
+                    })
+                });
             }
         }
     }
 
-    pub fn change_state(&self, game_state: State) {
-        if let Ok(mut state) = self.state.lock() {
-            *state = game_state;
-        }
-        self.update();
-    }
-
-    pub fn state(&self) -> State {
-        if let Ok(state) = self.state.lock() {
-            *state
-        } else {
-            State::Done
-        }
-    }
-
-    pub fn update(&self) {
-        if let Ok(mut updated) = self.updated.lock() {
-            *updated = Instant::now();
-        }
-    }
-
-    pub fn updated(&self) -> Instant {
-        if let Ok(updated) = self.updated.lock() {
-            *updated
-        } else {
-            Instant::now()
-        }
-    }
-
-    pub fn leaderboard_message(&self) -> LeaderboardMessage {
-        let [current, prior] = self.leaderboard.scores_descending();
-
-        let id_map = |i| self.names.get_name(&i).unwrap_or("Unknown".to_owned());
-
-        let id_score_map = |(id, s)| (id_map(id), s);
-
-        LeaderboardMessage {
-            current: current.map(id_score_map),
-            prior: prior.map(id_score_map),
-        }
-    }
-
-    pub fn score(&self, watcher_id: Id) -> Option<ScoreMessage> {
-        self.leaderboard.score(self.leaderboard_id(watcher_id))
-    }
-
-    pub fn announce_leaderboard(&self) {
-        let leaderboard_message = self.leaderboard_message();
-
-        self.announce_with(|watcher_id, watcher_kind| {
-            Some(match watcher_kind {
-                ValueKind::Host | ValueKind::Unassigned => UpdateMessage::Leaderboard {
-                    leaderboard: leaderboard_message.clone(),
-                }
-                .into(),
-                ValueKind::Player => UpdateMessage::Score {
-                    score: self.score(watcher_id),
-                }
-                .into(),
-            })
-        });
-    }
-
+    /// sends summary (last slide) to everyone
     fn announce_summary(&self) {
-        self.change_state(State::Done);
+        self.set_state(State::Done);
 
-        self.announce_with(|id, vk| match vk {
+        self.watchers.announce_with(|id, vk| match vk {
             ValueKind::Host => Some(
                 UpdateMessage::Summary({
                     let (player_count, stats) =
@@ -364,106 +479,107 @@ impl<T: Tunnel> Game<T> {
         });
     }
 
-    pub fn announce(&self, message: &super::UpdateMessage) {
-        for (_, session, _) in self.watchers.vec() {
-            session.send_message(message);
-        }
-    }
-
-    pub fn get_name(&self, watcher_id: Id) -> Option<String> {
-        self.watchers
-            .get_watcher_value(watcher_id)
-            .and_then(|v| match v {
-                Value::Player(player_value) => Some(player_value.name().to_owned()),
-                _ => None,
-            })
-    }
-
-    pub fn announce_with<F>(&self, sender: F)
-    where
-        F: Fn(Id, ValueKind) -> Option<super::UpdateMessage>,
-    {
-        for (watcher, session, v) in self.watchers.vec() {
-            let Some(message) = sender(watcher, v.kind()) else {
-                continue;
-            };
-
-            session.send_message(&message);
-        }
-    }
-
-    pub fn announce_host(&self, message: &super::UpdateMessage) {
-        for (_, session, _) in self.watchers.specific_vec(ValueKind::Host) {
-            session.send_message(message);
-        }
-    }
-
-    pub fn players(&self) -> Vec<Id> {
-        match &self.team_manager {
-            Some(team_manager) => team_manager.all_ids(),
-            None => self
-                .watchers
-                .specific_vec(ValueKind::Player)
-                .into_iter()
-                .map(|(x, _, _)| x)
-                .collect_vec(),
-        }
-    }
-
-    pub fn send(&self, message: &super::UpdateMessage, watcher_id: Id) {
-        self.watchers.send_message(message, watcher_id);
-    }
-
-    pub fn send_state(&self, message: &super::SyncMessage, watcher_id: Id) {
-        self.watchers.send_state(message, watcher_id);
-    }
-
+    /// mark the game as done and disconnect players
     pub fn mark_as_done(&self) {
-        self.change_state(State::Done);
+        self.set_state(State::Done);
         let watchers = self.watchers.vec().iter().map(|(x, _, _)| *x).collect_vec();
         for watcher in watchers {
-            self.remove_watcher_session(watcher);
+            self.watchers.remove_watcher_session(&watcher);
         }
     }
 
-    pub fn leaderboard_id(&self, player_id: Id) -> Id {
-        match &self.team_manager {
-            Some(team_manager) => team_manager.get_team(player_id).unwrap_or(player_id),
-            None => player_id,
+    /// send metainfo to player about the game
+    fn update_player_with_options(&self, watcher: Id) {
+        self.watchers.send_state(
+            &SyncMessage::Metainfo(MetainfoMessage::Player {
+                score: self.score(watcher).map_or(0, |x| x.points),
+                show_answers: self.options.show_answers,
+            })
+            .into(),
+            watcher,
+        );
+    }
+
+    /// start interactions with unassigned player
+    fn handle_unassigned(&self, watcher: Id) {
+        if let Some(team_manager) = &self.team_manager {
+            team_manager.add_player(watcher, self, &self.watchers);
+        }
+
+        if self.options.random_names {
+            loop {
+                let name = petname::petname(2, " ").to_title_case();
+                if self.assign_player_name(watcher, &name).is_ok() {
+                    break;
+                }
+            }
+        } else {
+            self.watchers
+                .send_message(&UpdateMessage::NameChoose.into(), watcher);
         }
     }
 
-    pub fn is_team(&self) -> bool {
-        self.options.teams.is_some()
+    /// assigns a player a name
+    fn assign_player_name(&self, watcher: Id, name: &str) -> Result<(), names::Error> {
+        let name = self.names.set_name(watcher, name)?;
+
+        self.watchers.update_watcher_value(
+            watcher,
+            Value::Player(watcher::PlayerValue::Individual { name: name.clone() }),
+        );
+
+        self.update_player_with_name(watcher, &name);
+
+        Ok(())
     }
 
-    pub fn team_size(&self, player_id: Id) -> usize {
-        match &self.team_manager {
-            Some(team_manager) => team_manager
-                .team_members(player_id)
-                .map(|members| {
-                    members
-                        .into_iter()
-                        .filter(|id| self.watchers.is_alive(*id))
-                        .collect_vec()
-                        .len()
-                })
-                .unwrap_or(1),
-            None => 1,
+    /// sends messages to the player about their new assigned name
+    pub fn update_player_with_name(&self, watcher: Id, name: &str) {
+        self.watchers
+            .send_message(&UpdateMessage::NameAssign(name.to_string()).into(), watcher);
+
+        self.update_player_with_options(watcher);
+
+        if !name.is_empty() {
+            // Announce to others of user joining
+            if matches!(self.state(), State::WaitingScreen) {
+                if let Some(team_manager) = &self.team_manager {
+                    if !team_manager.is_random_assignments() {
+                        self.watchers.announce_with(|id, value| match value {
+                            ValueKind::Player => {
+                                Some(self.choose_teammates_message(id, team_manager).into())
+                            }
+                            _ => None,
+                        });
+                    }
+                }
+
+                self.watchers.announce_specific(
+                    ValueKind::Host,
+                    &UpdateMessage::WaitingScreen(self.waiting_screen_names()).into(),
+                );
+            }
         }
+
+        self.watchers
+            .send_state(&self.state_message(watcher, ValueKind::Player), watcher);
     }
 
-    pub fn team_index(&self, player_id: Id) -> usize {
-        match &self.team_manager {
-            Some(team_manager) => team_manager.team_index(player_id).unwrap_or(0),
-            None => 0,
+    // Network
+
+    /// add a new watcher with given id and session
+    pub fn add_unassigned(&self, watcher: Id, session: T) -> Result<(), watcher::Error> {
+        self.watchers
+            .add_watcher(watcher, Value::Unassigned, session)?;
+
+        if !self.locked() {
+            self.handle_unassigned(watcher);
         }
+
+        Ok(())
     }
 
-    pub fn locked(&self) -> bool {
-        self.locked.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
+    /// handle incoming message from watcher id
     pub async fn receive_message(&self, watcher_id: Id, message: IncomingMessage) {
         let Some(watcher_value) = self.watchers.get_watcher_value(watcher_id) else {
             return;
@@ -475,19 +591,17 @@ impl<T: Tunnel> Game<T> {
 
         self.update();
 
-        let locked = self.locked();
-
         match message {
-            IncomingMessage::Unassigned(_) if locked => {}
+            IncomingMessage::Unassigned(_) if self.locked() => {}
             IncomingMessage::Host(IncomingHostMessage::Lock(lock_state)) => {
-                self.locked
-                    .store(lock_state, std::sync::atomic::Ordering::SeqCst);
+                self.set_locked(lock_state);
             }
             IncomingMessage::Unassigned(IncomingUnassignedMessage::NameRequest(s))
                 if !self.options.random_names =>
             {
-                if let Err(e) = self.assign_name(watcher_id, &s) {
-                    self.send(&UpdateMessage::NameError(e).into(), watcher_id);
+                if let Err(e) = self.assign_player_name(watcher_id, &s) {
+                    self.watchers
+                        .send_message(&UpdateMessage::NameError(e).into(), watcher_id);
                 }
             }
             IncomingMessage::Player(IncomingPlayerMessage::ChooseTeammates(preferences)) => {
@@ -517,7 +631,7 @@ impl<T: Tunnel> Game<T> {
                         if index + 1 >= self.fuiz_config.len() {
                             self.announce_summary();
                         } else {
-                            self.change_state(State::Slide(index + 1));
+                            self.set_state(State::Slide(index + 1));
                             self.fuiz_config.play_slide(self, index + 1).await;
                         }
                     }
@@ -531,6 +645,7 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
+    /// returns the message necessary to synchronize state
     pub fn state_message(&self, watcher_id: Id, watcher_kind: ValueKind) -> super::SyncMessage {
         match self.state() {
             State::WaitingScreen => match &self.team_manager {
@@ -549,20 +664,20 @@ impl<T: Tunnel> Game<T> {
                             .watchers
                             .specific_vec(ValueKind::Player)
                             .into_iter()
-                            .filter_map(|(id, _, _)| Some((id, self.get_name(id)?)))
+                            .filter_map(|(id, _, _)| Some((id, self.watchers.get_name(id)?)))
                             .map(|(id, name)| (name, pref.contains(&id)))
                             .collect(),
                     }
                     .into()
                 }
-                _ => SyncMessage::WaitingScreen(self.get_waiting_message()).into(),
+                _ => SyncMessage::WaitingScreen(self.waiting_screen_names()).into(),
             },
             State::TeamDisplay => match watcher_kind {
                 ValueKind::Player => SyncMessage::FindTeam(
                     self.team_manager
                         .as_ref()
                         .and_then(|tm| tm.get_team(watcher_id))
-                        .and_then(|id| self.get_name(id))
+                        .and_then(|id| self.watchers.get_name(id))
                         .unwrap_or_default(),
                 )
                 .into(),
@@ -622,129 +737,7 @@ impl<T: Tunnel> Game<T> {
         }
     }
 
-    pub fn get_waiting_message(&self) -> TruncatedVec<String> {
-        if let Some(team_manager) = &self.team_manager {
-            if matches!(self.state(), State::TeamDisplay) {
-                return team_manager.team_names().unwrap_or_default();
-            }
-        }
-
-        const LIMIT: usize = 50;
-
-        let player_names = self
-            .watchers
-            .specific_vec(ValueKind::Player)
-            .into_iter()
-            .filter_map(|(_, _, x)| match x {
-                Value::Player(player_value) => Some(player_value.name().to_owned()),
-                _ => None,
-            })
-            .unique();
-
-        TruncatedVec::new(
-            player_names,
-            LIMIT,
-            self.watchers.specific_count(ValueKind::Player),
-        )
-    }
-
-    pub fn announce_waiting(&self) {
-        if let State::WaitingScreen = self.state() {
-            if let Some(team_manager) = &self.team_manager {
-                if !team_manager.is_random_assignments() {
-                    self.announce_with(|id, value| match value {
-                        ValueKind::Player => Some(self.choose_message(id, team_manager).into()),
-                        _ => None,
-                    })
-                }
-            }
-
-            self.announce_host(&UpdateMessage::WaitingScreen(self.get_waiting_message()).into());
-        }
-    }
-
-    pub fn add_unassigned(&self, watcher: Id, session: T) -> Result<(), watcher::Error> {
-        self.watchers
-            .add_watcher(watcher, Value::Unassigned, session)?;
-
-        if !self.locked() {
-            self.handle_unassigned(watcher);
-        }
-
-        Ok(())
-    }
-
-    fn update_player_with_options(&self, watcher: Id) {
-        self.send_state(
-            &SyncMessage::Metainfo(MetainfoMessage::Player {
-                score: self.score(watcher).map_or(0, |x| x.points),
-                show_answers: self.options.show_answers,
-            })
-            .into(),
-            watcher,
-        );
-    }
-
-    fn assign_name(&self, watcher: Id, name: &str) -> Result<(), names::Error> {
-        let name = self.names.set_name(watcher, name)?;
-
-        self.watchers.update_watcher_value(
-            watcher,
-            Value::Player(watcher::PlayerValue::Individual { name: name.clone() }),
-        );
-
-        self.update_user_with_name(watcher, &name);
-
-        Ok(())
-    }
-
-    pub fn update_user_with_name(&self, watcher: Id, name: &str) {
-        self.send(&UpdateMessage::NameAssign(name.to_string()).into(), watcher);
-
-        self.update_player_with_options(watcher);
-
-        if !name.is_empty() {
-            self.announce_waiting();
-        }
-
-        self.send_state(&self.state_message(watcher, ValueKind::Player), watcher);
-    }
-
-    fn choose_message(&self, watcher: Id, team_manager: &TeamManager) -> UpdateMessage {
-        let pref: HashSet<_> = team_manager
-            .get_preferences(watcher)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        UpdateMessage::ChooseTeammates {
-            max_selection: team_manager.optimal_size,
-            available: self
-                .watchers
-                .specific_vec(ValueKind::Player)
-                .into_iter()
-                .filter_map(|(id, _, _)| Some((id, self.get_name(id)?)))
-                .map(|(id, name)| (name, pref.contains(&id)))
-                .collect(),
-        }
-    }
-
-    fn handle_unassigned(&self, watcher: Id) {
-        if let Some(team_manager) = &self.team_manager {
-            team_manager.add_player(watcher, self, &self.watchers);
-        }
-
-        if self.options.random_names {
-            loop {
-                let name = petname::petname(2, " ").to_title_case();
-                if self.assign_name(watcher, &name).is_ok() {
-                    break;
-                }
-            }
-        } else {
-            self.send(&UpdateMessage::NameChoose.into(), watcher);
-        }
-    }
-
+    /// replaces the session associated with watcher id with a new one
     pub fn update_session(&self, watcher_id: Id, session: T) {
         let Some(watcher_value) = self.watchers.get_watcher_value(watcher_id) else {
             return;
@@ -754,11 +747,11 @@ impl<T: Tunnel> Game<T> {
 
         match watcher_value.clone() {
             Value::Host => {
-                self.send_state(
+                self.watchers.send_state(
                     &self.state_message(watcher_id, watcher_value.kind()),
                     watcher_id,
                 );
-                self.send_state(
+                self.watchers.send_state(
                     &SyncMessage::Metainfo(MetainfoMessage::Host {
                         locked: self.locked(),
                     })
@@ -774,17 +767,17 @@ impl<T: Tunnel> Game<T> {
                     player_index_in_team: _,
                 } = &player_value
                 {
-                    self.send(
+                    self.watchers.send_message(
                         &UpdateMessage::FindTeam(team_name.clone()).into(),
                         watcher_id,
                     );
                 }
-                self.send(
+                self.watchers.send_message(
                     &UpdateMessage::NameAssign(player_value.name().to_owned()).into(),
                     watcher_id,
                 );
                 self.update_player_with_options(watcher_id);
-                self.send_state(
+                self.watchers.send_state(
                     &self.state_message(watcher_id, watcher_value.kind()),
                     watcher_id,
                 );
@@ -794,13 +787,5 @@ impl<T: Tunnel> Game<T> {
                 self.handle_unassigned(watcher_id);
             }
         }
-    }
-
-    pub fn has_watcher(&self, watcher_id: Id) -> bool {
-        self.watchers.has_watcher(watcher_id)
-    }
-
-    pub fn remove_watcher_session(&self, watcher: Id) {
-        self.watchers.remove_watcher_session(&watcher);
     }
 }

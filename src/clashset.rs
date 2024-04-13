@@ -20,7 +20,7 @@ impl<K> ClashSet<K>
 where
     K: Eq + std::hash::Hash + Clone,
 {
-    pub fn contains(&self, key: &K) -> bool {
+    pub fn _contains(&self, key: &K) -> bool {
         self.0.contains(key)
     }
 

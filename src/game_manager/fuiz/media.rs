@@ -1,6 +1,7 @@
 use garde::Validate;
 use serde::{Deserialize, Serialize};
 
+/// Represents any kinda of media, currently only images
 #[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub enum Media {
     Image(#[garde(dive)] Image),

@@ -23,13 +23,18 @@ use super::{
     media::Media,
 };
 
+/// Phase of the slide
 #[derive(Atom, Clone, Copy, Debug, Default)]
 #[repr(u8)]
 enum SlideState {
+    /// Unstarted, exists to distinguish between started and unstarted slide, usually treated the same as [`SlideState::Question`]
     #[default]
     Unstarted,
+    /// Showing a question without answers
     Question,
+    /// Showing questions and answers for players to answer
     Answers,
+    /// Showing correct answers and their statistics
     AnswersResults,
 }
 
@@ -69,36 +74,48 @@ fn validate_time_limit(val: &Duration) -> ValidationResult {
     validate_duration::<MIN_TIME_LIMIT, MAX_TIME_LIMIT>("time_limit", val)
 }
 
+/// Presenting a multiple choice question that presents a question then the answers with optional accompanying media
 #[serde_with::serde_as]
 #[skip_serializing_none]
 #[derive(Debug, Clone, Default, Serialize, serde::Deserialize, Validate)]
 pub struct Slide {
+    /// The question title, represents what's being asked
     #[garde(length(min = MIN_TITLE_LENGTH, max = MAX_TITLE_LENGTH))]
     title: String,
+    /// Accompanying media
     #[garde(dive)]
     media: Option<Media>,
+    /// Time before answers get displayed
     #[garde(custom(|v, _| validate_introduce_question(v)))]
     #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
     introduce_question: Duration,
+    /// Time where players can answer the question
     #[garde(custom(|v, _| validate_time_limit(v)))]
     #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
     time_limit: Duration,
+    /// Maximum number of points awarded the question, decreases linearly to half the amount by the end of the slide
     #[garde(skip)]
     points_awarded: u64,
+    /// Accompanying answers
     #[garde(length(max = MAX_ANSWER_COUNT))]
     answers: Vec<AnswerChoice>,
 
+    // State
+    /// Storage of user answers combined with the time of answering
     #[serde(skip)]
     #[garde(skip)]
     user_answers: DashMap<Id, (usize, Instant)>,
+    /// Instant where answers were first displayed
     #[serde(skip)]
     #[garde(skip)]
     answer_start: Arc<Mutex<Option<Instant>>>,
+    /// Stage of the slide
     #[serde(skip)]
     #[garde(skip)]
     state: Arc<Atomic<SlideState>>,
 }
 
+/// Utility option with contextual meaning of visibility to the player or the host
 #[serde_with::serde_as]
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
@@ -107,52 +124,74 @@ pub enum PossiblyHidden<T> {
     Hidden,
 }
 
+/// Messages sent to the listeners to update their pre-existing state with the slide state
 #[serde_with::serde_as]
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
 pub enum UpdateMessage {
+    /// Announcement of the question without its answers
     QuestionAnnouncment {
+        /// Index of the slide (0-indexing)
         index: usize,
+        /// Total count of slides
         count: usize,
+        /// Question text (i.e. what's being asked)
         question: String,
+        /// Accompanying media
         media: Option<Media>,
+        /// Time before answers will be release
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
     },
+    /// Announcements of the possible answers for the players to choose
     AnswersAnnouncement {
+        /// Time before the answering phase ends
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
+        /// Possible answers to choose from
         answers: Vec<PossiblyHidden<TextOrMedia>>,
     },
+    /// (HOST ONLY): Number of players who answered the question
     AnswersCount(usize),
+    /// Results of the game including correct answers and statistics of how many they got chosen
     AnswersResults {
+        /// Same answers for the question displayed
         answers: Vec<TextOrMedia>,
+        /// Correctness and statistics about the answers
         results: Vec<AnswerChoiceResult>,
     },
 }
 
+/// Messages sent to the listeners who lack preexisting state to synchronize their state.
+///
+/// See [`UpdateMessage`] for explaination of these fields.
 #[serde_with::serde_as]
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Clone)]
 pub enum SyncMessage {
+    /// Announcement of the question without its answers
     QuestionAnnouncment {
         index: usize,
         count: usize,
         question: String,
         media: Option<Media>,
+        /// Remaining time for the question to be displayed without its answers
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
     },
+    /// Announcements of the possible answers for the players to choose
     AnswersAnnouncement {
         index: usize,
         count: usize,
         question: String,
         media: Option<Media>,
+        /// Remaining time before the answering phase ends
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
         answers: Vec<PossiblyHidden<TextOrMedia>>,
         answered_count: usize,
     },
+    /// Results of the game including correct answers and statistics of how many they got chosen
     AnswersResults {
         index: usize,
         count: usize,
@@ -163,12 +202,14 @@ pub enum SyncMessage {
     },
 }
 
+/// Answer choice in the question slide
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnswerChoice {
     pub correct: bool,
     pub content: TextOrMedia,
 }
 
+/// Correctness and statistic on how players answered the question
 #[derive(Debug, Serialize, Clone)]
 pub struct AnswerChoiceResult {
     correct: bool,
@@ -213,7 +254,7 @@ impl Slide {
         if self.change_state(SlideState::Unstarted, SlideState::Question) {
             self.start_timer();
 
-            game.announce(
+            game.watchers.announce(
                 &UpdateMessage::QuestionAnnouncment {
                     index,
                     count,
@@ -234,7 +275,7 @@ impl Slide {
         if self.change_state(SlideState::Question, SlideState::Answers) {
             self.start_timer();
 
-            game.announce_with(|id, kind| {
+            game.watchers.announce_with(|id, kind| {
                 Some(
                     UpdateMessage::AnswersAnnouncement {
                         duration: self.time_limit,
@@ -269,7 +310,7 @@ impl Slide {
     fn send_answers_results<T: Tunnel>(&self, game: &Game<T>) {
         if self.change_state(SlideState::Answers, SlideState::AnswersResults) {
             let answer_count = self.user_answers.iter().map(|ua| ua.value().0).counts();
-            game.announce(
+            game.watchers.announce(
                 &UpdateMessage::AnswersResults {
                     answers: self.answers.iter().map(|a| a.content.clone()).collect_vec(),
                     results: self
@@ -315,7 +356,7 @@ impl Slide {
                 .min_by_key(|_, (_, score)| *score)
                 .into_iter()
                 .map(|(id, (_, score))| (id, score))
-                .chain(game.players().into_iter().map(|id| (id, 0)))
+                .chain(game.players_ids().into_iter().map(|id| (id, 0)))
                 .unique_by(|(id, _)| *id)
                 .collect_vec(),
         );
@@ -471,7 +512,8 @@ impl Slide {
                 if left_set.is_subset(&right_set) {
                     self.send_answers_results(game);
                 } else {
-                    game.announce_host(
+                    game.watchers.announce_specific(
+                        ValueKind::Host,
                         &UpdateMessage::AnswersCount(left_set.intersection(&right_set).count())
                             .into(),
                     );
