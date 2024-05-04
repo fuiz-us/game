@@ -26,8 +26,7 @@ serde_with = { version = "3", features = ["chrono"] }
 static-toml = "1.2.0"
 thiserror = "1.0"
 uuid = { version = "1", features = ["v4", "serde"] }
-garde-actix-web = "0.7"
-garde = "0.18"
+garde = { version = "0.18", features = ["derive"] }
 derive_more = "0.99"
 num-integer = "0.1"
 petname = "2"
