@@ -1,0 +1,72 @@
+use derive_where::derive_where;
+use itertools::Itertools;
+use serde::Serialize;
+
+static_toml::static_toml! {
+    #[static_toml(
+        suffix = Config,
+    )]
+    const CONFIG = include_toml!("config.toml");
+}
+
+pub mod fuiz;
+pub mod game;
+pub mod game_id;
+pub mod leaderboard;
+pub mod names;
+pub mod session;
+pub mod teams;
+pub mod watcher;
+
+#[derive(Debug, Serialize, Clone, derive_more::From)]
+pub enum SyncMessage {
+    Game(game::SyncMessage),
+    MultipleChoice(fuiz::multiple_choice::SyncMessage),
+}
+
+impl SyncMessage {
+    pub fn to_message(&self) -> String {
+        serde_json::to_string(self).expect("default serializer cannot fail")
+    }
+}
+
+#[derive(Debug, Serialize, Clone, derive_more::From)]
+pub enum UpdateMessage {
+    Game(game::UpdateMessage),
+    MultipleChoice(fuiz::multiple_choice::UpdateMessage),
+}
+
+#[derive(Debug, Clone, derive_more::From)]
+pub enum AlarmMessage {
+    MultipleChoice(fuiz::multiple_choice::AlarmMessage),
+}
+
+impl UpdateMessage {
+    pub fn to_message(&self) -> String {
+        serde_json::to_string(self).expect("default serializer cannot fail")
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[derive_where(Default)]
+pub struct TruncatedVec<T> {
+    exact_count: usize,
+    items: Vec<T>,
+}
+
+impl<T: Clone> TruncatedVec<T> {
+    fn new<I: Iterator<Item = T>>(list: I, limit: usize, exact_count: usize) -> Self {
+        let items = list.take(limit).collect_vec();
+        Self { exact_count, items }
+    }
+
+    fn map<F, U>(self, f: F) -> TruncatedVec<U>
+    where
+        F: Fn(T) -> U,
+    {
+        TruncatedVec {
+            exact_count: self.exact_count,
+            items: self.items.into_iter().map(f).collect_vec(),
+        }
+    }
+}

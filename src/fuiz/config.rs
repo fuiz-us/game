@@ -3,13 +3,8 @@ use web_time;
 use garde::Validate;
 use serde::{Deserialize, Serialize};
 
-use crate::game_manager::{
-    self,
-    leaderboard::Leaderboard,
-    session::Tunnel,
-    teams::TeamManager,
-    watcher::{Id, ValueKind, Watchers},
-    SyncMessage,
+use crate::{
+    leaderboard::Leaderboard, session::Tunnel, teams::TeamManager, watcher::{Id, ValueKind, Watchers}, AlarmMessage, SyncMessage
 };
 
 use super::{super::game::IncomingMessage, media::Media, multiple_choice};
@@ -49,7 +44,7 @@ impl Fuiz {
     pub fn play_slide<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration) -> (),
     >(
         &mut self,
         watchers: &Watchers,
@@ -66,7 +61,7 @@ impl Fuiz {
     pub fn receive_message<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration) -> (),
     >(
         &mut self,
         leaderboard: &mut Leaderboard,
@@ -122,7 +117,7 @@ impl Fuiz {
     pub fn receive_alarm<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration) -> (),
     >(
         &mut self,
         leaderboard: &mut Leaderboard,
@@ -130,7 +125,7 @@ impl Fuiz {
         team_manager: Option<&TeamManager>,
         schedule_message: &mut S,
         tunnel_finder: F,
-        message: game_manager::AlarmMessage,
+        message: AlarmMessage,
         index: usize,
     ) -> bool {
         let len = self.len();
@@ -156,7 +151,7 @@ impl Slide {
     pub fn play<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration) -> (),
     >(
         &mut self,
         watchers: &Watchers,
@@ -175,7 +170,7 @@ impl Slide {
     pub fn receive_message<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration) -> (),
     >(
         &mut self,
         leaderboard: &mut Leaderboard,
@@ -229,7 +224,7 @@ impl Slide {
     fn receive_alarm<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration) -> (),
     >(
         &mut self,
         leaderboard: &mut Leaderboard,
@@ -237,7 +232,7 @@ impl Slide {
         team_manager: Option<&TeamManager>,
         schedule_message: &mut S,
         tunnel_finder: F,
-        message: game_manager::AlarmMessage,
+        message: AlarmMessage,
         index: usize,
         count: usize,
     ) -> bool {

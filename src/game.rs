@@ -6,7 +6,7 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
-use crate::game_manager::watcher::Value;
+use crate::watcher::Value;
 
 use super::{
     fuiz::{config::Fuiz, multiple_choice},

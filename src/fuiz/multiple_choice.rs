@@ -9,8 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use web_time::SystemTime;
 
-use crate::game_manager::{
-    self,
+use crate::{
     leaderboard::Leaderboard,
     session::Tunnel,
     teams::TeamManager,
@@ -225,7 +224,7 @@ impl Slide {
     pub fn play<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(game_manager::AlarmMessage, time::Duration) -> (),
+        S: FnMut(crate::AlarmMessage, time::Duration) -> (),
     >(
         &mut self,
         watchers: &Watchers,
@@ -258,7 +257,7 @@ impl Slide {
     fn send_question_announcements<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(game_manager::AlarmMessage, time::Duration) -> (),
+        S: FnMut(crate::AlarmMessage, time::Duration) -> (),
     >(
         &mut self,
         watchers: &Watchers,
@@ -296,7 +295,7 @@ impl Slide {
     fn send_answers_announcements<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(game_manager::AlarmMessage, time::Duration) -> (),
+        S: FnMut(crate::AlarmMessage, time::Duration) -> (),
     >(
         &mut self,
         team_manager: Option<&TeamManager>,
@@ -600,7 +599,7 @@ impl Slide {
     pub fn receive_message<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(game_manager::AlarmMessage, time::Duration) -> (),
+        S: FnMut(crate::AlarmMessage, time::Duration) -> (),
     >(
         &mut self,
         watcher_id: Id,
@@ -669,7 +668,7 @@ impl Slide {
     pub fn receive_alarm<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(crate::AlarmMessage, web_time::Duration) -> (),
     >(
         &mut self,
         _leaderboard: &mut Leaderboard,
@@ -677,12 +676,12 @@ impl Slide {
         team_manager: Option<&TeamManager>,
         schedule_message: &mut S,
         tunnel_finder: F,
-        message: game_manager::AlarmMessage,
+        message: crate::AlarmMessage,
         index: usize,
         _count: usize,
     ) -> bool {
         match message {
-            game_manager::AlarmMessage::MultipleChoice(
+            crate::AlarmMessage::MultipleChoice(
                 AlarmMessage::ProceedFromSlideIntoSlide { index: _, to },
             ) => match to {
                 SlideState::Answers => {
