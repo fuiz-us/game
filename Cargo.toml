@@ -12,15 +12,9 @@ crate-type = ["lib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-actix-cors = "0.7"
-actix-web = "4"
-actix-ws = "0.2"
-atomig = { version = "0.4.0", features = ["derive"] }
-dashmap = "5"
 derive-where = "1"
 enum-map = { version = "2", features = ["serde"] }
 fastrand = "2"
-futures-util = "0.3"
 itertools = "0.12"
 kinded = "0.3"
 log = "0.4"
@@ -32,18 +26,12 @@ serde_with = { version = "3", features = ["chrono"] }
 static-toml = "1.2.0"
 thiserror = "1.0"
 uuid = { version = "1", features = ["v4", "serde"] }
-garde-actix-web = "0.5"
+garde-actix-web = "0.7"
 garde = "0.18"
-parking_lot = "0.12"
-unbox-box = "0.1.0"
 derive_more = "0.99"
 num-integer = "0.1"
-bytes = "1.5"
 petname = "2"
 heck = "0.5"
-boxcar = "0.2"
-jiden = "0.1.1"
 pluralizer = "0.4.0"
 web-time = { version = "1.1.0", features = ["serde"] }
 once_cell_serde = { version = "1.17.1", features = ["serde"] }
-dyn-clone = "1.0.17"
