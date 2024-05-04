@@ -1,5 +1,4 @@
 mod clashmap;
-mod clashset;
 mod game_manager;
 
 use crate::game_manager::{
@@ -20,14 +19,13 @@ use actix_web::{
 use futures_util::StreamExt;
 use game_manager::{
     game::{IncomingGhostMessage, Options},
-    session::Session,
     GameManager,
 };
 use itertools::Itertools;
 use serde_json::json;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, OnceLock,
 };
 
 extern crate pretty_env_logger;
@@ -41,8 +39,47 @@ static_toml::static_toml! {
     const CONFIG = include_toml!("config.toml");
 }
 
+#[derive(Clone)]
+pub struct Session {
+    session: actix_ws::Session,
+}
+
+impl Session {
+    pub fn new(session: actix_ws::Session) -> Self {
+        Self { session }
+    }
+}
+
+impl game_manager::session::Tunnel for Session {
+    fn send_message(&self, message: &game_manager::UpdateMessage) {
+        let mut session = self.session.clone();
+
+        let message = message.to_message();
+
+        actix_web::rt::spawn(async move {
+            let _ = session.text(message).await;
+        });
+    }
+
+    fn send_state(&self, state: &game_manager::SyncMessage) {
+        let mut session = self.session.clone();
+
+        let message = state.to_message();
+
+        actix_web::rt::spawn(async move {
+            let _ = session.text(message).await;
+        });
+    }
+
+    fn close(self) {
+        actix_web::rt::spawn(async move {
+            let _ = self.session.close(None).await;
+        });
+    }
+}
+
 struct AppState {
-    game_manager: GameManager<Session>,
+    game_manager: GameManager,
 }
 
 #[derive(serde::Deserialize, garde::Validate)]
@@ -129,16 +166,16 @@ fn websocket_heartbeat_verifier(mut session: actix_ws::Session) -> impl Fn(bytes
     }
 }
 
-#[get("/watch/{game_id}")]
+#[get("/watch/{game_id}/{watcher_id}")]
 async fn watch(
     data: web::Data<AppState>,
     req: HttpRequest,
     body: web::Payload,
-    game_id: web::Path<GameId>,
+    params: web::Path<(GameId, Option<Id>)>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (response, mut session, mut msg_stream) = actix_ws::handle(&req, body)?;
 
-    let game_id = *game_id;
+    let (game_id, _) = *params;
 
     data.game_manager.exists(game_id)?;
 
@@ -149,6 +186,36 @@ async fn watch(
     let data_thread = data.clone();
 
     actix_web::rt::spawn(async move {
+        let schedule_thread = data_thread.clone();
+
+        let schedule_message: Arc<
+            OnceLock<Box<dyn Fn(game_manager::AlarmMessage, web_time::Duration) -> ()>>,
+        > = Default::default();
+
+        let thread_schedule_message = schedule_message.clone();
+
+        let temp_schedule_message =
+            move |alarm_message: game_manager::AlarmMessage, duration: web_time::Duration| {
+                let schedule_thread = schedule_thread.clone();
+                let schedule_message = thread_schedule_message.clone();
+                actix_web::rt::spawn(async move {
+                    actix_web::rt::time::sleep(duration).await;
+                    let _ = schedule_thread.game_manager.receive_alarm(
+                        game_id,
+                        alarm_message,
+                        |alarm, duration| {
+                            schedule_message.get().expect("schedule is unintialized")(
+                                alarm, duration,
+                            )
+                        },
+                    );
+                });
+            };
+
+        schedule_message
+            .as_ref()
+            .get_or_init(|| Box::new(temp_schedule_message));
+
         let mut watcher_id = None;
         while let Some(Ok(msg)) = msg_stream.next().await {
             if data.game_manager.exists(game_id).is_err() {
@@ -176,9 +243,11 @@ async fn watch(
                                         Ok(true)
                                     ) =>
                                 {
+                                    data_thread.game_manager.set_tunnel(id, own_session.clone());
+
                                     if data_thread
                                         .game_manager
-                                        .update_session(game_id, id, own_session.clone())
+                                        .update_session(game_id, id)
                                         .is_err()
                                     {
                                         break;
@@ -193,11 +262,11 @@ async fn watch(
                                     own_session
                                         .send_message(&UpdateMessage::IdAssign(new_id).into());
 
-                                    match data_thread.game_manager.add_unassigned(
-                                        game_id,
-                                        new_id,
-                                        own_session.clone(),
-                                    ) {
+                                    data_thread
+                                        .game_manager
+                                        .set_tunnel(new_id, own_session.clone());
+
+                                    match data_thread.game_manager.add_unassigned(game_id, new_id) {
                                         Err(_) | Ok(Err(_)) => {
                                             own_session.clone().close();
                                         }
@@ -210,11 +279,20 @@ async fn watch(
                                 IncomingMessage::Ghost(_) => {}
                                 message => {
                                     let data_thread = data_thread.clone();
+                                    let schedule_message = schedule_message.clone();
                                     actix_web::rt::spawn(async move {
-                                        let _ = data_thread
-                                            .game_manager
-                                            .receive_message(game_id, watcher_id, message)
-                                            .await;
+                                        let _ = data_thread.game_manager.receive_message(
+                                            game_id,
+                                            watcher_id,
+                                            message,
+                                            |alarm, duration| {
+                                                schedule_message
+                                                    .get()
+                                                    .expect("schedule is unintialized")(
+                                                    alarm, duration,
+                                                )
+                                            },
+                                        );
                                     });
                                 }
                             },
@@ -226,6 +304,8 @@ async fn watch(
         }
 
         if let Some(watcher_id) = watcher_id {
+            data.game_manager.remove_tunnel(watcher_id);
+
             let _ = data
                 .game_manager
                 .remove_watcher_session(game_id, watcher_id);

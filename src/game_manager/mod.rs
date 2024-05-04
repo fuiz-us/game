@@ -4,15 +4,18 @@ use derive_where::derive_where;
 use enum_map::EnumMap;
 use itertools::Itertools;
 use jiden::StateSaver;
-use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
+use parking_lot::{
+    MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLockReadGuard, RwLockWriteGuard,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::{clashmap::ClashMap, Session};
 
 use self::{
     fuiz::config::Fuiz,
     game::{Game, IncomingMessage, Options},
     game_id::GameId,
-    session::Tunnel,
     watcher::Id,
 };
 
@@ -41,6 +44,11 @@ impl SyncMessage {
 pub enum UpdateMessage {
     Game(game::UpdateMessage),
     MultipleChoice(fuiz::multiple_choice::UpdateMessage),
+}
+
+#[derive(Debug, Clone, derive_more::From)]
+pub enum AlarmMessage {
+    MultipleChoice(fuiz::multiple_choice::AlarmMessage),
 }
 
 impl UpdateMessage {
@@ -73,15 +81,15 @@ impl<T: Clone> TruncatedVec<T> {
     }
 }
 
-#[derive_where(Debug, Default)]
-struct SharedGame<T: Tunnel>(parking_lot::RwLock<Option<Box<Game<T>>>>);
+#[derive(Debug, Default)]
+struct SharedGame(parking_lot::RwLock<Option<Box<Game>>>);
 
-impl<T: Tunnel> SharedGame<T> {
-    pub fn read(&self) -> Option<MappedRwLockReadGuard<'_, Game<T>>> {
+impl SharedGame {
+    pub fn read(&self) -> Option<MappedRwLockReadGuard<'_, Game>> {
         RwLockReadGuard::try_map(self.0.read(), std::option::Option::as_ref)
             .ok()
             .and_then(|x| {
-                if x.state().is_done() {
+                if matches!(x.state, game::State::Done) {
                     None
                 } else {
                     Some(MappedRwLockReadGuard::map(x, unbox_box::BoxExt::unbox_ref))
@@ -89,10 +97,22 @@ impl<T: Tunnel> SharedGame<T> {
             })
     }
 
-    pub fn read_done(&self) -> Option<MappedRwLockReadGuard<'_, Game<T>>> {
-        RwLockReadGuard::try_map(self.0.read(), std::option::Option::as_ref)
+    pub fn write(&self) -> Option<MappedRwLockWriteGuard<'_, Game>> {
+        RwLockWriteGuard::try_map(self.0.write(), std::option::Option::as_mut)
             .ok()
-            .map(|x| MappedRwLockReadGuard::map(x, unbox_box::BoxExt::unbox_ref))
+            .and_then(|x| {
+                if matches!(x.state, game::State::Done) {
+                    None
+                } else {
+                    Some(MappedRwLockWriteGuard::map(x, unbox_box::BoxExt::unbox_mut))
+                }
+            })
+    }
+
+    pub fn write_done(&self) -> Option<MappedRwLockWriteGuard<'_, Game>> {
+        RwLockWriteGuard::try_map(self.0.write(), std::option::Option::as_mut)
+            .ok()
+            .map(|x| MappedRwLockWriteGuard::map(x, unbox_box::BoxExt::unbox_mut))
     }
 }
 
@@ -102,20 +122,21 @@ pub struct Statistics {
     game_count: AtomicUsize,
 }
 
-#[derive_where(Debug)]
-pub struct GameManager<T: Tunnel> {
-    games: EnumMap<GameId, SharedGame<T>>,
+pub struct GameManager {
+    games: EnumMap<GameId, SharedGame>,
     statistics: Statistics,
     state_saver: StateSaver<Statistics>,
+    watcher_mapping: ClashMap<Id, Session>,
 }
 
-impl<T: Tunnel> Default for GameManager<T> {
+impl Default for GameManager {
     fn default() -> Self {
         let state_saver = StateSaver::new("stats.txt");
         Self {
             games: EnumMap::default(),
             statistics: state_saver.state().unwrap_or_default(),
             state_saver,
+            watcher_mapping: ClashMap::default(),
         }
     }
 }
@@ -126,7 +147,7 @@ pub struct GameVanish {}
 
 impl actix_web::error::ResponseError for GameVanish {}
 
-impl<T: Tunnel> GameManager<T> {
+impl GameManager {
     pub fn add_game(&self, fuiz: Fuiz, options: Options, host_id: Id) -> GameId {
         let shared_game = Box::new(Game::new(fuiz, options, host_id));
 
@@ -152,36 +173,59 @@ impl<T: Tunnel> GameManager<T> {
         }
     }
 
+    fn tunnel_finder(&self, watcher_id: Id) -> Option<Session> {
+        self.watcher_mapping.get(&watcher_id)
+    }
+
+    pub fn set_tunnel(&self, watcher_id: Id, tunnel: Session) -> Option<Session> {
+        self.watcher_mapping.insert(watcher_id, tunnel)
+    }
+
+    pub fn remove_tunnel(&self, watcher_id: Id) -> Option<Session> {
+        self.watcher_mapping.remove(&watcher_id).map(|(_, s)| s)
+    }
+
     pub fn add_unassigned(
         &self,
         game_id: GameId,
         watcher_id: Id,
-        new_session: T,
     ) -> Result<Result<(), watcher::Error>, GameVanish> {
         Ok(self
-            .get_game(game_id)?
-            .add_unassigned(watcher_id, new_session))
+            .get_game_mut(game_id)?
+            .add_unassigned(watcher_id, |id| self.tunnel_finder(id)))
     }
 
     pub fn alive_check(&self, game_id: GameId) -> Result<bool, GameVanish> {
-        let game = self.get_done_game(game_id)?;
-        Ok(!matches!(game.state(), game::State::Done)
-            && game.updated().elapsed() <= std::time::Duration::from_secs(60 * 60))
+        let game = self.get_done_game_mut(game_id)?;
+        Ok(!matches!(game.state, game::State::Done))
     }
 
     pub fn watcher_exists(&self, game_id: GameId, watcher_id: Id) -> Result<bool, GameVanish> {
         Ok(self.get_game(game_id)?.watchers.has_watcher(watcher_id))
     }
 
-    pub async fn receive_message(
+    pub fn receive_message<F: Fn(AlarmMessage, web_time::Duration)>(
         &self,
         game_id: GameId,
         watcher_id: Id,
         message: IncomingMessage,
+        schedule_message: F,
     ) -> Result<(), GameVanish> {
-        self.get_game(game_id)?
-            .receive_message(watcher_id, message)
-            .await;
+        self.get_game_mut(game_id)?
+            .receive_message(watcher_id, message, schedule_message, |id| {
+                self.tunnel_finder(id)
+            });
+        Ok(())
+    }
+
+    pub fn receive_alarm<F: Fn(AlarmMessage, web_time::Duration)>(
+        &self,
+        game_id: GameId,
+        alarm_message: AlarmMessage,
+        schedule_message: F,
+    ) -> Result<(), GameVanish> {
+        self.get_game_mut(game_id)?
+            .receive_alarm(alarm_message, schedule_message, |id| self.tunnel_finder(id));
         Ok(())
     }
 
@@ -190,9 +234,9 @@ impl<T: Tunnel> GameManager<T> {
         game_id: GameId,
         watcher_id: Id,
     ) -> Result<(), GameVanish> {
-        self.get_game(game_id)?
+        self.get_game_mut(game_id)?
             .watchers
-            .remove_watcher_session(&watcher_id);
+            .remove_watcher_session(&watcher_id, |id| self.tunnel_finder(id));
         Ok(())
     }
 
@@ -202,40 +246,39 @@ impl<T: Tunnel> GameManager<T> {
         Ok(())
     }
 
-    pub fn update_session(
-        &self,
-        game_id: GameId,
-        watcher_id: Id,
-        new_session: T,
-    ) -> Result<(), GameVanish> {
-        self.get_game(game_id)?
-            .update_session(watcher_id, new_session);
+    pub fn update_session(&self, game_id: GameId, watcher_id: Id) -> Result<(), GameVanish> {
+        self.get_game_mut(game_id)?
+            .update_session(watcher_id, |id| self.tunnel_finder(id));
 
         Ok(())
     }
 
-    pub fn get_game(
-        &self,
-        game_id: GameId,
-    ) -> Result<MappedRwLockReadGuard<'_, Game<T>>, GameVanish> {
+    pub fn get_game(&self, game_id: GameId) -> Result<MappedRwLockReadGuard<'_, Game>, GameVanish> {
         self.games[game_id].read().ok_or(GameVanish {})
     }
 
-    pub fn get_done_game(
+    pub fn get_game_mut(
         &self,
         game_id: GameId,
-    ) -> Result<MappedRwLockReadGuard<'_, Game<T>>, GameVanish> {
-        self.games[game_id].read_done().ok_or(GameVanish {})
+    ) -> Result<MappedRwLockWriteGuard<'_, Game>, GameVanish> {
+        self.games[game_id].write().ok_or(GameVanish {})
+    }
+
+    pub fn get_done_game_mut(
+        &self,
+        game_id: GameId,
+    ) -> Result<MappedRwLockWriteGuard<'_, Game>, GameVanish> {
+        self.games[game_id].write_done().ok_or(GameVanish {})
     }
 
     pub fn remove_game(&self, game_id: GameId) {
         let mut game = self.games[game_id].0.write();
-        if let Some(ongoing_game) = game.take() {
+        if let Some(mut ongoing_game) = game.take() {
             self.statistics
                 .game_count
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             self.state_saver.save(&self.statistics);
-            ongoing_game.mark_as_done();
+            ongoing_game.mark_as_done(|id| self.tunnel_finder(id));
         }
     }
 

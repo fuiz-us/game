@@ -1,44 +1,40 @@
-use std::{
-    collections::BTreeSet,
-    sync::{atomic::AtomicUsize, OnceLock},
-};
+use std::collections::{BTreeSet, HashMap};
 
 use heck::ToTitleCase;
 use itertools::Itertools;
-
-use crate::clashmap::ClashMap;
+use once_cell_serde::sync::OnceCell;
+use serde::{Deserialize, Serialize};
 
 use super::{
-    game::Game,
     names,
     session::Tunnel,
     watcher::{self, Id, Watchers},
     TruncatedVec,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TeamManager {
-    player_to_team: ClashMap<Id, Id>,
-    team_to_players: ClashMap<Id, boxcar::Vec<Id>>,
+    player_to_team: HashMap<Id, Id>,
+    team_to_players: HashMap<Id, Vec<Id>>,
     pub optimal_size: usize,
-    preferences: Option<ClashMap<Id, Vec<Id>>>,
-    teams: OnceLock<Vec<(Id, String)>>,
-    next_team_to_receive_player: AtomicUsize,
+    preferences: Option<HashMap<Id, Vec<Id>>>,
+    teams: OnceCell<Vec<(Id, String)>>,
+    next_team_to_receive_player: usize,
 }
 
 impl TeamManager {
     pub fn new(optimal_size: usize, assign_random: bool) -> Self {
         Self {
-            player_to_team: ClashMap::default(),
-            team_to_players: ClashMap::default(),
+            player_to_team: HashMap::default(),
+            team_to_players: HashMap::default(),
             optimal_size,
             preferences: if assign_random {
                 None
             } else {
-                Some(ClashMap::default())
+                Some(HashMap::default())
             },
-            teams: OnceLock::new(),
-            next_team_to_receive_player: AtomicUsize::new(0),
+            teams: OnceCell::default(),
+            next_team_to_receive_player: 0,
         }
     }
 
@@ -46,35 +42,42 @@ impl TeamManager {
         self.preferences.is_none()
     }
 
-    pub fn finalize<T: Tunnel>(
-        &self,
-        _game: &Game<T>,
-        watchers: &Watchers<T>,
-        names: &names::Names,
+    pub fn finalize<T: Tunnel, F: Fn(Id) -> Option<T>>(
+        &mut self,
+        watchers: &mut Watchers,
+        names: &mut names::Names,
+        tunnel_finder: F,
     ) {
-        self.teams.get_or_init(|| {
+        let optimal_size = self.optimal_size;
+        let preferences = &self.preferences;
+        let player_to_team = &mut self.player_to_team;
+        let team_to_players = &mut self.team_to_players;
+
+        let get_preferences = |player_id: Id| -> Option<Vec<Id>> {
+            preferences
+                .as_ref()
+                .and_then(|p| p.get(&player_id))
+                .map(|p| p.to_owned())
+        };
+
+        self.teams.get_or_init(move || {
             let players = watchers
-                .specific_vec(watcher::ValueKind::Player)
+                .specific_vec(watcher::ValueKind::Player, tunnel_finder)
                 .into_iter()
                 .map(|(id, _, _)| id)
                 .collect_vec();
 
-            let teams_count = players.len().div_ceil(self.optimal_size).max(1);
-
-            dbg!(players
-                .iter()
-                .map(|p| self.get_preferences(*p))
-                .collect_vec());
+            let teams_count = players.len().div_ceil(optimal_size).max(1);
 
             let mut existing_teams = players
                 .into_iter()
                 .map(|id| {
                     (
-                        self.get_preferences(id)
+                        get_preferences(id)
                             .unwrap_or_default()
                             .into_iter()
                             .filter(|pref| {
-                                self.get_preferences(*pref)
+                                get_preferences(*pref)
                                     .unwrap_or_default()
                                     .into_iter()
                                     .any(|prefs_pref| prefs_pref == id)
@@ -112,7 +115,7 @@ impl TeamManager {
 
                 for prefs in existing_teams {
                     if let Some(bucket) = tree
-                        .range(..(PreferenceGroup(self.optimal_size - prefs.len() + 1, Vec::new())))
+                        .range(..(PreferenceGroup(optimal_size - prefs.len() + 1, Vec::new())))
                         .next_back()
                         .map(|b| b.1.clone())
                     {
@@ -135,7 +138,9 @@ impl TeamManager {
                         match names.set_name(
                             team_id,
                             &pluralizer::pluralize(
-                                &petname::petname(1, " ").to_title_case(),
+                                &petname::petname(1, " ")
+                                    .expect("Petname failed")
+                                    .to_title_case(),
                                 2,
                                 false,
                             ),
@@ -147,7 +152,7 @@ impl TeamManager {
 
                     players.iter().copied().enumerate().for_each(
                         |(player_index_in_team, player_id)| {
-                            self.player_to_team.insert(player_id, team_id);
+                            player_to_team.insert(player_id, team_id);
                             watchers.update_watcher_value(
                                 player_id,
                                 watcher::Value::Player(watcher::PlayerValue::Team {
@@ -159,8 +164,8 @@ impl TeamManager {
                             );
                         },
                     );
-                    self.team_to_players
-                        .insert(team_id, players.iter().copied().collect());
+
+                    team_to_players.insert(team_id, players.iter().copied().collect());
 
                     (team_id, team_name)
                 })
@@ -181,24 +186,20 @@ impl TeamManager {
     }
 
     pub fn get_team(&self, player_id: Id) -> Option<Id> {
-        self.player_to_team.get(&player_id)
+        self.player_to_team.get(&player_id).map(|id| *id)
     }
 
-    pub fn get_preferences(&self, player_id: Id) -> Option<Vec<Id>> {
-        self.preferences.as_ref().and_then(|p| p.get(&player_id))
-    }
-
-    pub fn set_preferences(&self, player_id: Id, preferences: Vec<Id>) {
-        if let Some(prefs) = &self.preferences {
+    pub fn set_preferences(&mut self, player_id: Id, preferences: Vec<Id>) {
+        if let Some(prefs) = &mut self.preferences {
             prefs.insert(player_id, preferences);
         }
     }
 
-    pub fn add_player<T: Tunnel>(&self, player_id: Id, game: &Game<T>, watchers: &Watchers<T>) {
+    pub fn add_player(&mut self, player_id: Id, watchers: &mut Watchers) -> Option<String> {
         if let Some(teams) = self.teams.get() {
-            let next_index = self
-                .next_team_to_receive_player
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let next_index = self.next_team_to_receive_player;
+
+            self.next_team_to_receive_player += 1;
 
             let (team_id, team_name) = teams
                 .get(next_index % teams.len())
@@ -207,13 +208,16 @@ impl TeamManager {
             self.player_to_team.insert(player_id, *team_id);
             let p = self
                 .team_to_players
-                .get(team_id)
+                .get_mut(team_id)
                 .expect("race condition :(");
 
             let player_index = {
-                match p.iter().position(|(_, p)| *p == player_id) {
+                match p.iter().position(|p| *p == player_id) {
                     Some(i) => i,
-                    None => p.push(player_id),
+                    None => {
+                        p.push(player_id);
+                        p.len() - 1
+                    }
                 }
             };
 
@@ -221,27 +225,29 @@ impl TeamManager {
                 player_id,
                 watcher::Value::Player(watcher::PlayerValue::Team {
                     team_name: team_name.to_owned(),
-                    individual_name: game.watchers.get_name(player_id).unwrap_or_default(),
+                    individual_name: watchers.get_name(player_id).unwrap_or_default(),
                     team_id: *team_id,
                     player_index_in_team: player_index,
                 }),
             );
 
-            game.update_player_with_name(player_id, team_name);
+            Some(team_name.to_owned())
+        } else {
+            None
         }
     }
 
     pub fn _team_size(&self, player_id: Id) -> Option<usize> {
         self.get_team(player_id)
             .and_then(|team_id| self.team_to_players.get(&team_id))
-            .map(|p| p.count())
+            .map(|p| p.len())
     }
 
     pub fn team_members(&self, player_id: Id) -> Option<Vec<Id>> {
         self.get_team(player_id).and_then(|team_id| {
             self.team_to_players
                 .get(&team_id)
-                .map(|v| v.iter().map(|(_, id)| *id).collect_vec())
+                .map(|v| v.iter().map(|id| *id).collect_vec())
         })
     }
 
@@ -249,15 +255,16 @@ impl TeamManager {
         self.get_team(player_id)
             .and_then(|team_id| self.team_to_players.get(&team_id))
             .and_then(|p| {
-                p.iter().filter(|(_, id)| f(**id)).enumerate().find_map(
-                    |(index, (_, current_player_id))| {
+                p.iter()
+                    .filter(|id| f(**id))
+                    .enumerate()
+                    .find_map(|(index, current_player_id)| {
                         if *current_player_id == player_id {
                             Some(index)
                         } else {
                             None
                         }
-                    },
-                )
+                    })
             })
     }
 
@@ -265,5 +272,12 @@ impl TeamManager {
         self.teams.get().map_or(Vec::new(), |teams| {
             teams.iter().map(|(id, _)| *id).collect_vec()
         })
+    }
+
+    pub fn get_preferences(&self, watcher_id: Id) -> Option<Vec<Id>> {
+        self.preferences
+            .as_ref()
+            .and_then(|p| p.get(&watcher_id))
+            .map(|p| p.to_owned())
     }
 }

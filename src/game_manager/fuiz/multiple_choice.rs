@@ -1,32 +1,32 @@
 use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-    time::Duration,
+    collections::{HashMap, HashSet},
+    time::{self, Duration},
 };
 
-use actix_web::rt::time::Instant;
-use atomig::{Atom, Atomic, Ordering};
-use dashmap::DashMap;
 use garde::Validate;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
+use web_time::SystemTime;
 
 use crate::game_manager::{
+    self,
+    leaderboard::Leaderboard,
     session::Tunnel,
-    watcher::{Id, ValueKind},
+    teams::TeamManager,
+    watcher::{Id, ValueKind, Watchers},
 };
 
 use super::{
-    super::game::{Game, IncomingHostMessage, IncomingMessage, IncomingPlayerMessage},
-    config::{Fuiz, TextOrMedia},
+    super::game::{IncomingHostMessage, IncomingMessage, IncomingPlayerMessage},
+    config::TextOrMedia,
     media::Media,
 };
 
 /// Phase of the slide
-#[derive(Atom, Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
-enum SlideState {
+pub enum SlideState {
     /// Unstarted, exists to distinguish between started and unstarted slide, usually treated the same as [`SlideState::Question`]
     #[default]
     Unstarted,
@@ -102,17 +102,17 @@ pub struct Slide {
 
     // State
     /// Storage of user answers combined with the time of answering
-    #[serde(skip)]
+    #[serde(default)]
     #[garde(skip)]
-    user_answers: DashMap<Id, (usize, Instant)>,
+    user_answers: HashMap<Id, (usize, SystemTime)>,
     /// Instant where answers were first displayed
-    #[serde(skip)]
+    #[serde(default)]
     #[garde(skip)]
-    answer_start: Arc<Mutex<Option<Instant>>>,
+    answer_start: Option<SystemTime>,
     /// Stage of the slide
-    #[serde(skip)]
+    #[serde(default)]
     #[garde(skip)]
-    state: Arc<Atomic<SlideState>>,
+    state: SlideState,
 }
 
 /// Utility option with contextual meaning of visibility to the player or the host
@@ -160,6 +160,11 @@ pub enum UpdateMessage {
         /// Correctness and statistics about the answers
         results: Vec<AnswerChoiceResult>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum AlarmMessage {
+    ProceedFromSlideIntoSlide { index: usize, to: SlideState },
 }
 
 /// Messages sent to the listeners who lack preexisting state to synchronize their state.
@@ -217,8 +222,19 @@ pub struct AnswerChoiceResult {
 }
 
 impl Slide {
-    pub async fn play<T: Tunnel>(&self, game: &Game<T>, _fuiz: &Fuiz, index: usize, count: usize) {
-        self.send_question_announcements(game, index, count).await;
+    pub fn play<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(game_manager::AlarmMessage, time::Duration) -> (),
+    >(
+        &mut self,
+        watchers: &Watchers,
+        schedule_message: S,
+        tunnel_finder: F,
+        index: usize,
+        count: usize,
+    ) {
+        self.send_question_announcements(watchers, schedule_message, tunnel_finder, index, count);
     }
 
     fn calculate_score(
@@ -231,30 +247,30 @@ impl Slide {
             as u64
     }
 
-    fn start_timer(&self) {
-        if let Ok(mut instant) = self.answer_start.lock() {
-            *instant = Some(Instant::now());
-        }
+    fn start_timer(&mut self) {
+        self.answer_start = Some(SystemTime::now());
     }
 
-    fn timer(&self) -> Instant {
-        self.answer_start
-            .lock()
-            .ok()
-            .and_then(|x| *x)
-            .unwrap_or(Instant::now())
+    fn timer(&self) -> SystemTime {
+        self.answer_start.unwrap_or(SystemTime::now())
     }
 
-    async fn send_question_announcements<T: Tunnel>(
-        &self,
-        game: &Game<T>,
+    fn send_question_announcements<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(game_manager::AlarmMessage, time::Duration) -> (),
+    >(
+        &mut self,
+        watchers: &Watchers,
+        mut schedule_message: S,
+        tunnel_finder: F,
         index: usize,
         count: usize,
     ) {
         if self.change_state(SlideState::Unstarted, SlideState::Question) {
             self.start_timer();
 
-            game.watchers.announce(
+            watchers.announce(
                 &UpdateMessage::QuestionAnnouncment {
                     index,
                     count,
@@ -263,54 +279,113 @@ impl Slide {
                     duration: self.introduce_question,
                 }
                 .into(),
+                tunnel_finder,
             );
 
-            actix_web::rt::time::sleep(self.introduce_question).await;
-
-            self.send_answers_announcements(game).await;
+            schedule_message(
+                AlarmMessage::ProceedFromSlideIntoSlide {
+                    index: index,
+                    to: SlideState::Answers,
+                }
+                .into(),
+                self.introduce_question,
+            )
         }
     }
 
-    async fn send_answers_announcements<T: Tunnel>(&self, game: &Game<T>) {
+    fn send_answers_announcements<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(game_manager::AlarmMessage, time::Duration) -> (),
+    >(
+        &mut self,
+        team_manager: Option<&TeamManager>,
+        watchers: &Watchers,
+        mut schedule_message: S,
+        tunnel_finder: F,
+        index: usize,
+    ) {
         if self.change_state(SlideState::Question, SlideState::Answers) {
             self.start_timer();
 
-            game.watchers.announce_with(|id, kind| {
-                Some(
-                    UpdateMessage::AnswersAnnouncement {
-                        duration: self.time_limit,
-                        answers: self.get_answers_for_player(
-                            id,
-                            kind,
-                            game.team_size(id),
-                            game.team_index(id),
-                            game.is_team(),
-                        ),
-                    }
-                    .into(),
-                )
-            });
+            watchers.announce_with(
+                |id, kind| {
+                    Some(
+                        UpdateMessage::AnswersAnnouncement {
+                            duration: self.time_limit,
+                            answers: self.get_answers_for_player(
+                                id,
+                                kind,
+                                {
+                                    match &team_manager {
+                                        Some(team_manager) => {
+                                            team_manager.team_members(id).map_or(1, |members| {
+                                                members
+                                                    .into_iter()
+                                                    .filter(|id| {
+                                                        watchers.is_alive(*id, &tunnel_finder)
+                                                    })
+                                                    .collect_vec()
+                                                    .len()
+                                            })
+                                        }
+                                        None => 1,
+                                    }
+                                },
+                                {
+                                    match &team_manager {
+                                        Some(team_manager) => team_manager
+                                            .team_index(id, |id| watchers.has_watcher(id))
+                                            .unwrap_or(0),
+                                        None => 0,
+                                    }
+                                },
+                                team_manager.is_some(),
+                            ),
+                        }
+                        .into(),
+                    )
+                },
+                &tunnel_finder,
+            );
 
-            actix_web::rt::time::sleep(self.time_limit).await;
-
-            self.send_answers_results(game);
+            schedule_message(
+                AlarmMessage::ProceedFromSlideIntoSlide {
+                    index: index,
+                    to: SlideState::AnswersResults,
+                }
+                .into(),
+                self.time_limit,
+            )
         }
     }
 
-    fn change_state(&self, before: SlideState, after: SlideState) -> bool {
-        self.state
-            .compare_exchange(before, after, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+    fn change_state(&mut self, before: SlideState, after: SlideState) -> bool {
+        if self.state == before {
+            self.state = after;
+
+            true
+        } else {
+            false
+        }
     }
 
     fn state(&self) -> SlideState {
-        self.state.load(Ordering::SeqCst)
+        self.state
     }
 
-    fn send_answers_results<T: Tunnel>(&self, game: &Game<T>) {
+    fn send_answers_results<T: Tunnel, F: Fn(Id) -> Option<T>>(
+        &mut self,
+        watchers: &Watchers,
+        tunnel_finder: F,
+    ) {
         if self.change_state(SlideState::Answers, SlideState::AnswersResults) {
-            let answer_count = self.user_answers.iter().map(|ua| ua.value().0).counts();
-            game.watchers.announce(
+            let answer_count = self
+                .user_answers
+                .iter()
+                .map(|(_, (answer, _))| *answer)
+                .counts();
+            watchers.announce(
                 &UpdateMessage::AnswersResults {
                     answers: self.answers.iter().map(|a| a.content.clone()).collect_vec(),
                     results: self
@@ -324,27 +399,34 @@ impl Slide {
                         .collect_vec(),
                 }
                 .into(),
+                tunnel_finder,
             );
         }
     }
 
-    fn add_scores<T: Tunnel>(&self, game: &Game<T>) {
+    fn add_scores<T: Tunnel, F: Fn(Id) -> Option<T>>(
+        &self,
+        leaderboard: &mut Leaderboard,
+        watchers: &Watchers,
+        team_manager: Option<&TeamManager>,
+        tunnel_finder: F,
+    ) {
         let starting_instant = self.timer();
 
-        game.leaderboard.add_scores(
+        leaderboard.add_scores(
             &self
                 .user_answers
                 .iter()
-                .map(|ua| {
-                    let id = ua.key();
-                    let (answer, instant) = *ua.value();
-                    let correct = self.answers.get(answer).is_some_and(|x| x.correct);
+                .map(|(id, (answer, instant))| {
+                    let correct = self.answers.get(*answer).is_some_and(|x| x.correct);
                     (
                         *id,
                         if correct {
                             Slide::calculate_score(
                                 self.time_limit,
-                                instant - starting_instant,
+                                instant
+                                    .duration_since(starting_instant)
+                                    .expect("future is past the past"),
                                 self.points_awarded,
                             )
                         } else {
@@ -352,11 +434,30 @@ impl Slide {
                         },
                     )
                 })
-                .into_grouping_map_by(|(id, _)| game.leaderboard_id(*id))
+                .into_grouping_map_by(|(id, _)| {
+                    let player_id = *id;
+                    match &team_manager {
+                        Some(team_manager) => team_manager.get_team(player_id).unwrap_or(player_id),
+                        None => player_id,
+                    }
+                })
                 .min_by_key(|_, (_, score)| *score)
                 .into_iter()
                 .map(|(id, (_, score))| (id, score))
-                .chain(game.players_ids().into_iter().map(|id| (id, 0)))
+                .chain(
+                    {
+                        match &team_manager {
+                            Some(team_manager) => team_manager.all_ids(),
+                            None => watchers
+                                .specific_vec(ValueKind::Player, tunnel_finder)
+                                .into_iter()
+                                .map(|(x, _, _)| x)
+                                .collect_vec(),
+                        }
+                    }
+                    .into_iter()
+                    .map(|id| (id, 0)),
+                )
                 .unique_by(|(id, _)| *id)
                 .collect_vec(),
         );
@@ -404,11 +505,13 @@ impl Slide {
         }
     }
 
-    pub fn state_message<T: Tunnel>(
+    pub fn state_message<T: Tunnel, F: Fn(Id) -> Option<T>>(
         &self,
         watcher_id: Id,
         watcher_kind: ValueKind,
-        game: &Game<T>,
+        team_manager: Option<&TeamManager>,
+        watchers: &Watchers,
+        tunnel_finder: F,
         index: usize,
         count: usize,
     ) -> SyncMessage {
@@ -418,38 +521,61 @@ impl Slide {
                 count,
                 question: self.title.clone(),
                 media: self.media.clone(),
-                duration: self.introduce_question - self.timer().elapsed(),
+                duration: self.introduce_question
+                    - self.timer().elapsed().expect("system clock went backwards"),
             },
             SlideState::Answers => SyncMessage::AnswersAnnouncement {
                 index,
                 count,
                 question: self.title.clone(),
                 media: self.media.clone(),
-                duration: self.time_limit - self.timer().elapsed(),
+                duration: {
+                    self.time_limit - self.timer().elapsed().expect("system clock went backwards")
+                },
                 answers: self.get_answers_for_player(
                     watcher_id,
                     watcher_kind,
-                    game.team_size(watcher_id),
-                    game.team_index(watcher_id),
-                    game.is_team(),
+                    {
+                        match &team_manager {
+                            Some(team_manager) => {
+                                team_manager.team_members(watcher_id).map_or(1, |members| {
+                                    members
+                                        .into_iter()
+                                        .filter(|id| watchers.is_alive(*id, &tunnel_finder))
+                                        .collect_vec()
+                                        .len()
+                                })
+                            }
+                            None => 1,
+                        }
+                    },
+                    {
+                        match &team_manager {
+                            Some(team_manager) => team_manager
+                                .team_index(watcher_id, |id| watchers.has_watcher(id))
+                                .unwrap_or(0),
+                            None => 0,
+                        }
+                    },
+                    team_manager.is_some(),
                 ),
                 answered_count: {
-                    let left_set: HashSet<_> = game
-                        .watchers
-                        .specific_vec(ValueKind::Player)
+                    let left_set: HashSet<_> = watchers
+                        .specific_vec(ValueKind::Player, &tunnel_finder)
                         .iter()
                         .map(|(w, _, _)| w.to_owned())
                         .collect();
-                    let right_set: HashSet<_> = self
-                        .user_answers
-                        .iter()
-                        .map(|ua| ua.key().to_owned())
-                        .collect();
+                    let right_set: HashSet<_> =
+                        self.user_answers.iter().map(|(id, _)| *id).collect();
                     left_set.intersection(&right_set).count()
                 },
             },
             SlideState::AnswersResults => {
-                let answer_count = self.user_answers.iter().map(|ua| ua.value().0).counts();
+                let answer_count = self
+                    .user_answers
+                    .iter()
+                    .map(|(_, (answer, _))| answer)
+                    .counts();
 
                 SyncMessage::AnswersResults {
                     index,
@@ -471,55 +597,108 @@ impl Slide {
         }
     }
 
-    pub async fn receive_message<T: Tunnel>(
-        &self,
-        game: &Game<T>,
-        _fuiz: &Fuiz,
+    pub fn receive_message<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(game_manager::AlarmMessage, time::Duration) -> (),
+    >(
+        &mut self,
         watcher_id: Id,
         message: IncomingMessage,
+        leaderboard: &mut Leaderboard,
+        watchers: &Watchers,
+        team_manager: Option<&TeamManager>,
+        schedule_message: S,
+        tunnel_finder: F,
         index: usize,
         count: usize,
-    ) {
+    ) -> bool {
         match message {
-            IncomingMessage::Host(IncomingHostMessage::Next) => {
-                match self.state.load(Ordering::SeqCst) {
-                    SlideState::Unstarted => {
-                        self.send_question_announcements(game, index, count).await;
-                    }
-                    SlideState::Question => self.send_answers_announcements(game).await,
-                    SlideState::Answers => self.send_answers_results(game),
-                    SlideState::AnswersResults => {
-                        self.add_scores(game);
-                        game.finish_slide().await;
-                    }
+            IncomingMessage::Host(IncomingHostMessage::Next) => match self.state() {
+                SlideState::Unstarted => {
+                    self.send_question_announcements(
+                        watchers,
+                        schedule_message,
+                        tunnel_finder,
+                        index,
+                        count,
+                    );
                 }
-            }
+                SlideState::Question => {
+                    self.send_answers_announcements(
+                        team_manager,
+                        watchers,
+                        schedule_message,
+                        tunnel_finder,
+                        index,
+                    );
+                }
+                SlideState::Answers => self.send_answers_results(watchers, tunnel_finder),
+                SlideState::AnswersResults => {
+                    self.add_scores(leaderboard, watchers, team_manager, tunnel_finder);
+                    return true;
+                }
+            },
             IncomingMessage::Player(IncomingPlayerMessage::IndexAnswer(v))
                 if v < self.answers.len() =>
             {
-                self.user_answers.insert(watcher_id, (v, Instant::now()));
-                let left_set: HashSet<_> = game
-                    .watchers
-                    .specific_vec(ValueKind::Player)
+                self.user_answers.insert(watcher_id, (v, SystemTime::now()));
+                let left_set: HashSet<_> = watchers
+                    .specific_vec(ValueKind::Player, &tunnel_finder)
                     .iter()
                     .map(|(w, _, _)| w.to_owned())
                     .collect();
-                let right_set: HashSet<_> = self
-                    .user_answers
-                    .iter()
-                    .map(|ua| ua.key().to_owned())
-                    .collect();
+                let right_set: HashSet<_> = self.user_answers.iter().map(|(id, _)| *id).collect();
                 if left_set.is_subset(&right_set) {
-                    self.send_answers_results(game);
+                    self.send_answers_results(watchers, &tunnel_finder);
                 } else {
-                    game.watchers.announce_specific(
+                    watchers.announce_specific(
                         ValueKind::Host,
                         &UpdateMessage::AnswersCount(left_set.intersection(&right_set).count())
                             .into(),
+                        &tunnel_finder,
                     );
                 }
             }
             _ => (),
-        }
+        };
+
+        false
+    }
+
+    pub fn receive_alarm<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+    >(
+        &mut self,
+        _leaderboard: &mut Leaderboard,
+        watchers: &Watchers,
+        team_manager: Option<&TeamManager>,
+        schedule_message: &mut S,
+        tunnel_finder: F,
+        message: game_manager::AlarmMessage,
+        index: usize,
+        _count: usize,
+    ) -> bool {
+        match message {
+            game_manager::AlarmMessage::MultipleChoice(
+                AlarmMessage::ProceedFromSlideIntoSlide { index: _, to },
+            ) => match to {
+                SlideState::Answers => {
+                    self.send_answers_announcements(
+                        team_manager,
+                        watchers,
+                        schedule_message,
+                        tunnel_finder,
+                        index,
+                    );
+                }
+                SlideState::AnswersResults => self.send_answers_results(watchers, tunnel_finder),
+                _ => (),
+            },
+        };
+
+        false
     }
 }

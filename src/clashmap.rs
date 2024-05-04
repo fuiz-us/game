@@ -30,17 +30,17 @@ where
         self.0.get(key).map(|v| v.to_owned())
     }
 
-    pub fn contains_key(&self, key: &K) -> bool {
-        self.0.contains_key(key)
-    }
+    // pub fn contains_key(&self, key: &K) -> bool {
+    //     self.0.contains_key(key)
+    // }
 
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         self.0.insert(key, value)
     }
 
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
+    // pub fn len(&self) -> usize {
+    //     self.0.len()
+    // }
 
     pub fn remove(&self, key: &K) -> Option<(K, V)> {
         self.0.remove(key)
@@ -53,15 +53,15 @@ where
             .collect_vec()
     }
 
-    pub fn insert_if_vacant(&self, key: K, value: V) -> Option<(K, V)> {
-        match self.0.entry(key) {
-            Entry::Occupied(o) => Some((o.into_key(), value)),
-            Entry::Vacant(v) => {
-                v.insert(value);
-                None
-            }
-        }
-    }
+    // pub fn insert_if_vacant(&self, key: K, value: V) -> Option<(K, V)> {
+    //     match self.0.entry(key) {
+    //         Entry::Occupied(o) => Some((o.into_key(), value)),
+    //         Entry::Vacant(v) => {
+    //             v.insert(value);
+    //             None
+    //         }
+    //     }
+    // }
 }
 
 impl<K, V> ClashMap<K, V>

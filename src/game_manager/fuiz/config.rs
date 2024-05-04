@@ -1,17 +1,18 @@
+use web_time;
+
 use garde::Validate;
 use serde::{Deserialize, Serialize};
 
 use crate::game_manager::{
+    self,
+    leaderboard::Leaderboard,
     session::Tunnel,
-    watcher::{Id, ValueKind},
+    teams::TeamManager,
+    watcher::{Id, ValueKind, Watchers},
     SyncMessage,
 };
 
-use super::{
-    super::game::{Game, IncomingMessage},
-    media::Media,
-    multiple_choice,
-};
+use super::{super::game::IncomingMessage, media::Media, multiple_choice};
 
 const CONFIG: crate::config::fuiz::FuizConfig = crate::CONFIG.fuiz;
 
@@ -45,70 +46,170 @@ impl Fuiz {
         self.slides.len()
     }
 
-    pub async fn play_slide<T: Tunnel>(&self, game: &Game<T>, i: usize) {
-        if let Some(slide) = self.slides.get(i) {
-            slide.play(game, self, i, self.slides.len()).await;
+    pub fn play_slide<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+    >(
+        &mut self,
+        watchers: &Watchers,
+        schedule_message: S,
+        tunnel_finder: F,
+        index: usize,
+    ) {
+        let count = self.len();
+        if let Some(slide) = self.slides.get_mut(index) {
+            slide.play(watchers, schedule_message, tunnel_finder, index, count);
         }
     }
 
-    pub async fn receive_message<T: Tunnel>(
-        &self,
-        game: &Game<T>,
+    pub fn receive_message<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+    >(
+        &mut self,
+        leaderboard: &mut Leaderboard,
+        watchers: &Watchers,
+        team_manager: Option<&TeamManager>,
+        schedule_message: S,
+        tunnel_finder: F,
         watcher_id: Id,
         message: IncomingMessage,
         index: usize,
-    ) {
-        if let Some(slide) = self.slides.get(index) {
-            slide
-                .receive_message(game, self, watcher_id, message, index, self.slides.len())
-                .await;
+    ) -> bool {
+        let count = self.len();
+
+        if let Some(slide) = self.slides.get_mut(index) {
+            slide.receive_message(
+                leaderboard,
+                watchers,
+                team_manager,
+                schedule_message,
+                watcher_id,
+                tunnel_finder,
+                message,
+                index,
+                count,
+            )
+        } else {
+            false
         }
     }
 
-    pub fn state_message<T: Tunnel>(
+    pub fn state_message<T: Tunnel, F: Fn(Id) -> Option<T>>(
         &self,
         watcher_id: Id,
         watcher_kind: ValueKind,
-        game: &Game<T>,
+        team_manager: Option<&TeamManager>,
+        watchers: &Watchers,
+        tunnel_finder: F,
         index: usize,
     ) -> Option<SyncMessage> {
         self.slides.get(index).map(|slide| {
-            slide.state_message(watcher_id, watcher_kind, game, index, self.slides.len())
+            slide.state_message(
+                watcher_id,
+                watcher_kind,
+                team_manager,
+                watchers,
+                tunnel_finder,
+                index,
+                self.slides.len(),
+            )
         })
+    }
+
+    pub fn receive_alarm<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+    >(
+        &mut self,
+        leaderboard: &mut Leaderboard,
+        watchers: &Watchers,
+        team_manager: Option<&TeamManager>,
+        schedule_message: &mut S,
+        tunnel_finder: F,
+        message: game_manager::AlarmMessage,
+        index: usize,
+    ) -> bool {
+        let len = self.len();
+
+        if let Some(slide) = self.slides.get_mut(index) {
+            slide.receive_alarm(
+                leaderboard,
+                watchers,
+                team_manager,
+                schedule_message,
+                tunnel_finder,
+                message,
+                index,
+                len,
+            )
+        } else {
+            false
+        }
     }
 }
 
 impl Slide {
-    pub async fn play<T: Tunnel>(&self, game: &Game<T>, fuiz: &Fuiz, index: usize, count: usize) {
-        match self {
-            Self::MultipleChoice(s) => {
-                s.play(game, fuiz, index, count).await;
-            }
-        }
-    }
-
-    pub async fn receive_message<T: Tunnel>(
-        &self,
-        game: &Game<T>,
-        fuiz: &Fuiz,
-        watcher_id: Id,
-        message: IncomingMessage,
+    pub fn play<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+    >(
+        &mut self,
+        watchers: &Watchers,
+        schedule_message: S,
+        tunnel_finder: F,
         index: usize,
         count: usize,
     ) {
         match self {
             Self::MultipleChoice(s) => {
-                s.receive_message(game, fuiz, watcher_id, message, index, count)
-                    .await;
+                s.play(watchers, schedule_message, tunnel_finder, index, count);
             }
         }
     }
 
-    pub fn state_message<T: Tunnel>(
+    pub fn receive_message<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+    >(
+        &mut self,
+        leaderboard: &mut Leaderboard,
+        watchers: &Watchers,
+        team_manager: Option<&TeamManager>,
+        schedule_message: S,
+        watcher_id: Id,
+        tunnel_finder: F,
+        message: IncomingMessage,
+        index: usize,
+        count: usize,
+    ) -> bool {
+        match self {
+            Self::MultipleChoice(s) => s.receive_message(
+                watcher_id,
+                message,
+                leaderboard,
+                watchers,
+                team_manager,
+                schedule_message,
+                tunnel_finder,
+                index,
+                count,
+            ),
+        }
+    }
+
+    pub fn state_message<T: Tunnel, F: Fn(Id) -> Option<T>>(
         &self,
         watcher_id: Id,
         watcher_kind: ValueKind,
-        game: &Game<T>,
+        team_manager: Option<&TeamManager>,
+        watchers: &Watchers,
+        tunnel_finder: F,
         index: usize,
         count: usize,
     ) -> SyncMessage {
@@ -116,10 +217,41 @@ impl Slide {
             Self::MultipleChoice(s) => SyncMessage::MultipleChoice(s.state_message(
                 watcher_id,
                 watcher_kind,
-                game,
+                team_manager,
+                watchers,
+                tunnel_finder,
                 index,
                 count,
             )),
+        }
+    }
+
+    fn receive_alarm<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(game_manager::AlarmMessage, web_time::Duration) -> (),
+    >(
+        &mut self,
+        leaderboard: &mut Leaderboard,
+        watchers: &Watchers,
+        team_manager: Option<&TeamManager>,
+        schedule_message: &mut S,
+        tunnel_finder: F,
+        message: game_manager::AlarmMessage,
+        index: usize,
+        count: usize,
+    ) -> bool {
+        match self {
+            Self::MultipleChoice(s) => s.receive_alarm(
+                leaderboard,
+                watchers,
+                team_manager,
+                schedule_message,
+                tunnel_finder,
+                message,
+                index,
+                count,
+            ),
         }
     }
 }
