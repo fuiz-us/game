@@ -1,16 +1,16 @@
-use rustrict::CensorStr;
-use serde::Serialize;
-use thiserror::Error;
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 
-use crate::{clashmap::ClashMap, clashset::ClashSet};
+use rustrict::CensorStr;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use super::watcher::Id;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Names {
-    mapping: ClashMap<Id, String>,
-    reverse_mapping: ClashMap<String, Id>,
-    existing: ClashSet<String>,
+    mapping: HashMap<Id, String>,
+    reverse_mapping: HashMap<String, Id>,
+    existing: HashSet<String>,
 }
 
 #[derive(Error, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,14 +27,12 @@ pub enum Error {
     TooLong,
 }
 
-impl actix_web::error::ResponseError for Error {}
-
 impl Names {
     pub fn get_name(&self, id: &Id) -> Option<String> {
-        self.mapping.get(id)
+        self.mapping.get(id).map(|s| s.to_owned())
     }
 
-    pub fn set_name(&self, id: Id, name: &str) -> Result<String, Error> {
+    pub fn set_name(&mut self, id: Id, name: &str) -> Result<String, Error> {
         if name.len() > 30 {
             return Err(Error::TooLong);
         }
@@ -48,16 +46,17 @@ impl Names {
         if !self.existing.insert(name.to_owned()) {
             return Err(Error::Used);
         }
-        if self.mapping.insert_if_vacant(id, name.to_owned()).is_some() {
-            self.existing.remove(name);
-            Err(Error::Assigned)
-        } else {
-            self.reverse_mapping.insert(name.to_owned(), id);
-            Ok(name.to_owned())
+        match self.mapping.entry(id) {
+            Entry::Occupied(_) => Err(Error::Assigned),
+            Entry::Vacant(v) => {
+                v.insert(name.to_owned());
+                self.reverse_mapping.insert(name.to_owned(), id);
+                Ok(name.to_owned())
+            }
         }
     }
 
     pub fn get_id(&self, name: &str) -> Option<Id> {
-        self.reverse_mapping.get(name)
+        self.reverse_mapping.get(name).map(|id| *id)
     }
 }

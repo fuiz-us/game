@@ -1,17 +1,16 @@
-use std::{fmt::Display, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    str::FromStr,
+};
 
 use enum_map::{Enum, EnumMap};
 use itertools::Itertools;
 use kinded::Kinded;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use thiserror::Error;
 use uuid::Uuid;
-
-use crate::{
-    clashmap::ClashMap,
-    clashset::{self, ClashSet},
-};
 
 use super::{session::Tunnel, SyncMessage, UpdateMessage};
 
@@ -44,15 +43,15 @@ impl FromStr for Id {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Kinded)]
-#[kinded(derive(Hash, Enum))]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Kinded, Serialize, Deserialize)]
+#[kinded(derive(Hash, Enum, Serialize, Deserialize))]
 pub enum Value {
     Unassigned,
     Host,
     Player(PlayerValue),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PlayerValue {
     Individual {
         name: String,
@@ -79,11 +78,10 @@ impl PlayerValue {
     }
 }
 
-#[derive_where::derive_where(Default)]
-pub struct Watchers<T: Tunnel> {
-    sessions: ClashMap<Id, T>,
-    mapping: ClashMap<Id, Value>,
-    reverse_mapping: EnumMap<ValueKind, ClashSet<Id>>,
+#[derive(Default, Serialize, Deserialize)]
+pub struct Watchers {
+    mapping: HashMap<Id, Value>,
+    reverse_mapping: EnumMap<ValueKind, HashSet<Id>>,
 }
 
 const MAX_PLAYERS: usize = crate::CONFIG.fuiz.max_player_count.unsigned_abs() as usize;
@@ -94,42 +92,42 @@ pub enum Error {
     MaximumPlayers,
 }
 
-impl actix_web::error::ResponseError for Error {}
-
-impl<T: Tunnel> Watchers<T> {
+impl Watchers {
     pub fn with_host_id(host_id: Id) -> Self {
         Self {
-            sessions: ClashMap::default(),
             mapping: {
-                let map = ClashMap::default();
+                let mut map = HashMap::default();
                 map.insert(host_id, Value::Host);
                 map
             },
             reverse_mapping: {
-                let map: EnumMap<ValueKind, ClashSet<Id>> = EnumMap::default();
+                let mut map: EnumMap<ValueKind, HashSet<Id>> = EnumMap::default();
                 map[ValueKind::Host].insert(host_id);
                 map
             },
         }
     }
 
-    pub fn vec(&self) -> Vec<(Id, T, Value)> {
+    pub fn vec<T: Tunnel, F: Fn(Id) -> Option<T>>(&self, tunnel_finder: F) -> Vec<(Id, T, Value)> {
         self.reverse_mapping
             .values()
-            .flat_map(clashset::ClashSet::vec)
-            .filter_map(|x| match (self.sessions.get(&x), self.mapping.get(&x)) {
-                (Some(t), Some(v)) => Some((x, t, v)),
+            .flat_map(|v| v.iter())
+            .filter_map(|x| match (tunnel_finder(*x), self.mapping.get(x)) {
+                (Some(t), Some(v)) => Some((*x, t, v.to_owned())),
                 _ => None,
             })
             .collect_vec()
     }
 
-    pub fn specific_vec(&self, filter: ValueKind) -> Vec<(Id, T, Value)> {
+    pub fn specific_vec<T: Tunnel, F: Fn(Id) -> Option<T>>(
+        &self,
+        filter: ValueKind,
+        tunnel_finder: F,
+    ) -> Vec<(Id, T, Value)> {
         self.reverse_mapping[filter]
-            .vec()
-            .into_iter()
-            .filter_map(|x| match (self.sessions.get(&x), self.mapping.get(&x)) {
-                (Some(t), Some(v)) => Some((x, t, v)),
+            .iter()
+            .filter_map(|x| match (tunnel_finder(*x), self.mapping.get(x)) {
+                (Some(t), Some(v)) => Some((*x, t, v.to_owned())),
                 _ => None,
             })
             .collect_vec()
@@ -139,20 +137,11 @@ impl<T: Tunnel> Watchers<T> {
         self.reverse_mapping[filter].len()
     }
 
-    pub fn add_watcher(
-        &self,
-        watcher_id: Id,
-        watcher_value: Value,
-        session: T,
-    ) -> Result<(), Error> {
+    pub fn add_watcher(&mut self, watcher_id: Id, watcher_value: Value) -> Result<(), Error> {
         let kind = watcher_value.kind();
 
-        if self.sessions.len() >= MAX_PLAYERS {
+        if self.mapping.len() >= MAX_PLAYERS {
             return Err(Error::MaximumPlayers);
-        }
-
-        if let Some(x) = self.sessions.insert(watcher_id, session) {
-            x.close();
         }
 
         self.mapping.insert(watcher_id, watcher_value);
@@ -161,7 +150,7 @@ impl<T: Tunnel> Watchers<T> {
         Ok(())
     }
 
-    pub fn update_watcher_value(&self, watcher_id: Id, watcher_value: Value) {
+    pub fn update_watcher_value(&mut self, watcher_id: Id, watcher_value: Value) {
         let old_kind = match self.mapping.get(&watcher_id) {
             Some(v) => v.kind(),
             _ => return,
@@ -174,38 +163,52 @@ impl<T: Tunnel> Watchers<T> {
         self.mapping.insert(watcher_id, watcher_value);
     }
 
-    pub fn update_watcher_session(&self, watcher_id: Id, session: T) {
-        self.sessions.insert(watcher_id, session);
-    }
-
     pub fn get_watcher_value(&self, watcher_id: Id) -> Option<Value> {
-        self.mapping.get(&watcher_id)
+        self.mapping.get(&watcher_id).map(|v| v.to_owned())
     }
 
     pub fn has_watcher(&self, watcher_id: Id) -> bool {
         self.mapping.contains_key(&watcher_id)
     }
 
-    pub fn is_alive(&self, watcher_id: Id) -> bool {
-        self.sessions.contains_key(&watcher_id)
+    pub fn is_alive<T: Tunnel, F: Fn(Id) -> Option<T>>(
+        &self,
+        watcher_id: Id,
+        tunnel_finder: F,
+    ) -> bool {
+        tunnel_finder(watcher_id).is_some()
     }
 
-    pub fn remove_watcher_session(&self, watcher_id: &Id) {
-        if let Some((_, x)) = self.sessions.remove(watcher_id) {
+    pub fn remove_watcher_session<T: Tunnel, F: Fn(Id) -> Option<T>>(
+        &mut self,
+        watcher_id: &Id,
+        tunnel_finder: F,
+    ) {
+        if let Some(x) = tunnel_finder(*watcher_id) {
             x.close();
         }
     }
 
-    pub fn send_message(&self, message: &UpdateMessage, watcher_id: Id) {
-        let Some(session) = self.sessions.get(&watcher_id) else {
+    pub fn send_message<T: Tunnel, F: Fn(Id) -> Option<T>>(
+        &self,
+        message: &UpdateMessage,
+        watcher_id: Id,
+        tunnel_finder: F,
+    ) {
+        let Some(session) = tunnel_finder(watcher_id) else {
             return;
         };
 
         session.send_message(message);
     }
 
-    pub fn send_state(&self, message: &SyncMessage, watcher_id: Id) {
-        let Some(session) = self.sessions.get(&watcher_id) else {
+    pub fn send_state<T: Tunnel, F: Fn(Id) -> Option<T>>(
+        &self,
+        message: &SyncMessage,
+        watcher_id: Id,
+        tunnel_finder: F,
+    ) {
+        let Some(session) = tunnel_finder(watcher_id) else {
             return;
         };
 
@@ -219,11 +222,11 @@ impl<T: Tunnel> Watchers<T> {
         })
     }
 
-    pub fn announce_with<F>(&self, sender: F)
+    pub fn announce_with<S, T: Tunnel, F: Fn(Id) -> Option<T>>(&self, sender: S, tunnel_finder: F)
     where
-        F: Fn(Id, ValueKind) -> Option<super::UpdateMessage>,
+        S: Fn(Id, ValueKind) -> Option<super::UpdateMessage>,
     {
-        for (watcher, session, v) in self.vec() {
+        for (watcher, session, v) in self.vec(tunnel_finder) {
             let Some(message) = sender(watcher, v.kind()) else {
                 continue;
             };
@@ -232,12 +235,21 @@ impl<T: Tunnel> Watchers<T> {
         }
     }
 
-    pub fn announce(&self, message: &super::UpdateMessage) {
-        self.announce_with(|_, _| Some(message.to_owned()));
+    pub fn announce<T: Tunnel, F: Fn(Id) -> Option<T>>(
+        &self,
+        message: &super::UpdateMessage,
+        tunnel_finder: F,
+    ) {
+        self.announce_with(|_, _| Some(message.to_owned()), tunnel_finder);
     }
 
-    pub fn announce_specific(&self, filter: ValueKind, message: &super::UpdateMessage) {
-        for (_, session, _) in self.specific_vec(filter) {
+    pub fn announce_specific<T: Tunnel, F: Fn(Id) -> Option<T>>(
+        &self,
+        filter: ValueKind,
+        message: &super::UpdateMessage,
+        tunnel_finder: F,
+    ) {
+        for (_, session, _) in self.specific_vec(filter, tunnel_finder) {
             session.send_message(message);
         }
     }

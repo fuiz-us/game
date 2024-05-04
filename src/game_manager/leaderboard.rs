@@ -1,30 +1,27 @@
 use itertools::Itertools;
-use serde::Serialize;
-use std::{
-    collections::HashMap,
-    sync::{atomic::AtomicUsize, OnceLock},
-};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use super::{watcher::Id, TruncatedVec};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlideSummary {
     scores_descending: Vec<(Id, u64)>,
     mapping: HashMap<Id, (u64, usize)>,
     points_earned: Vec<(Id, u64)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalSummary {
     stats: Vec<(usize, usize)>,
     mapping: HashMap<Id, Vec<u64>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Leaderboard {
-    slide_summaries: boxcar::Vec<SlideSummary>,
-    current_slide: AtomicUsize,
-    final_summary: OnceLock<FinalSummary>,
+    slide_summaries: Vec<SlideSummary>,
+    current_slide: usize,
+    final_summary: once_cell_serde::sync::OnceCell<FinalSummary>,
 }
 
 #[derive(Debug, Serialize, Clone, Copy)]
@@ -35,10 +32,10 @@ pub struct ScoreMessage {
 
 impl Leaderboard {
     fn slide(&self) -> usize {
-        self.current_slide.load(std::sync::atomic::Ordering::SeqCst)
+        self.current_slide
     }
 
-    pub fn add_scores(&self, scores: &[(Id, u64)]) {
+    pub fn add_scores(&mut self, scores: &[(Id, u64)]) {
         let mut summary: HashMap<Id, u64> = self
             .slide_summaries
             .get(self.slide())
@@ -67,14 +64,13 @@ impl Leaderboard {
             .map(|(position, (id, points))| (*id, (*points, position)))
             .collect();
 
-        let i = self.slide_summaries.push(SlideSummary {
+        self.slide_summaries.push(SlideSummary {
             scores_descending,
             mapping,
             points_earned: scores.to_vec(),
         });
 
-        self.current_slide
-            .store(i, std::sync::atomic::Ordering::SeqCst);
+        self.current_slide = self.slide_summaries.len() - 1;
     }
 
     pub fn scores_descending<const T: usize>(&self) -> [TruncatedVec<(Id, u64)>; T] {
@@ -108,7 +104,7 @@ impl Leaderboard {
         let summaries = self
             .slide_summaries
             .iter()
-            .map(|(_, s)| {
+            .map(|s| {
                 s.points_earned
                     .clone()
                     .into_iter()
@@ -145,7 +141,7 @@ impl Leaderboard {
             stats: self
                 .slide_summaries
                 .iter()
-                .map(|(_, s)| {
+                .map(|s| {
                     s.points_earned
                         .iter()
                         .fold((0, 0), |(correct, wrong), (_, earned)| {
@@ -177,7 +173,7 @@ impl Leaderboard {
 
     pub fn player_summary(&self, id: Id, show_real_score: bool) -> Vec<u64> {
         self.final_summary(show_real_score).mapping.get(&id).map_or(
-            vec![0; self.slide_summaries.count()],
+            vec![0; self.slide_summaries.len()],
             std::clone::Clone::clone,
         )
     }
