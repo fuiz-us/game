@@ -4,7 +4,11 @@ use garde::Validate;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    leaderboard::Leaderboard, session::Tunnel, teams::TeamManager, watcher::{Id, ValueKind, Watchers}, AlarmMessage, SyncMessage
+    leaderboard::Leaderboard,
+    session::Tunnel,
+    teams::TeamManager,
+    watcher::{Id, ValueKind, Watchers},
+    AlarmMessage, SyncMessage,
 };
 
 use super::{super::game::IncomingMessage, media::Media, multiple_choice};

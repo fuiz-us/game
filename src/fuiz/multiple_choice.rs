@@ -681,9 +681,10 @@ impl Slide {
         _count: usize,
     ) -> bool {
         match message {
-            crate::AlarmMessage::MultipleChoice(
-                AlarmMessage::ProceedFromSlideIntoSlide { index: _, to },
-            ) => match to {
+            crate::AlarmMessage::MultipleChoice(AlarmMessage::ProceedFromSlideIntoSlide {
+                index: _,
+                to,
+            }) => match to {
                 SlideState::Answers => {
                     self.send_answers_announcements(
                         team_manager,
