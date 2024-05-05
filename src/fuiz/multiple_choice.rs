@@ -161,7 +161,7 @@ pub enum UpdateMessage {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AlarmMessage {
     ProceedFromSlideIntoSlide { index: usize, to: SlideState },
 }

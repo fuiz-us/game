@@ -1,6 +1,6 @@
 use derive_where::derive_where;
 use itertools::Itertools;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 static_toml::static_toml! {
     #[static_toml(
@@ -36,7 +36,7 @@ pub enum UpdateMessage {
     MultipleChoice(fuiz::multiple_choice::UpdateMessage),
 }
 
-#[derive(Debug, Clone, derive_more::From)]
+#[derive(Debug, Clone, derive_more::From, Serialize, Deserialize)]
 pub enum AlarmMessage {
     MultipleChoice(fuiz::multiple_choice::AlarmMessage),
 }
