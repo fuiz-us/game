@@ -15,6 +15,12 @@ impl GameId {
     }
 }
 
+impl Default for GameId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Display for GameId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:05o}", self.0)

@@ -18,7 +18,6 @@ use crate::{
 
 use super::{
     super::game::{IncomingHostMessage, IncomingMessage, IncomingPlayerMessage},
-    config::TextOrMedia,
     media::Media,
 };
 
@@ -31,8 +30,6 @@ pub enum SlideState {
     Unstarted,
     /// Showing a question without answers
     Question,
-    /// Showing questions and answers for players to answer
-    Answers,
     /// Showing correct answers and their statistics
     AnswersResults,
 }
@@ -52,22 +49,15 @@ fn validate_duration<const MIN_SECONDS: u64, const MAX_SECONDS: u64>(
     }
 }
 
-const CONFIG: crate::config::fuiz::multiple_choice::MultipleChoiceConfig =
-    crate::CONFIG.fuiz.multiple_choice;
+const CONFIG: crate::config::fuiz::type_answer::TypeAnswerConfig = crate::CONFIG.fuiz.type_answer;
 
 const MIN_TITLE_LENGTH: usize = CONFIG.min_title_length.unsigned_abs() as usize;
-const MIN_INTRODUCE_QUESTION: u64 = CONFIG.min_introduce_question.unsigned_abs();
 const MIN_TIME_LIMIT: u64 = CONFIG.min_time_limit.unsigned_abs();
 
 const MAX_TIME_LIMIT: u64 = CONFIG.max_time_limit.unsigned_abs();
 const MAX_TITLE_LENGTH: usize = CONFIG.max_title_length.unsigned_abs() as usize;
-const MAX_INTRODUCE_QUESTION: u64 = CONFIG.max_introduce_question.unsigned_abs();
 
 const MAX_ANSWER_COUNT: usize = CONFIG.max_answer_count.unsigned_abs() as usize;
-
-fn validate_introduce_question(val: &Duration) -> ValidationResult {
-    validate_duration::<MIN_INTRODUCE_QUESTION, MAX_INTRODUCE_QUESTION>("introduce_question", val)
-}
 
 fn validate_time_limit(val: &Duration) -> ValidationResult {
     validate_duration::<MIN_TIME_LIMIT, MAX_TIME_LIMIT>("time_limit", val)
@@ -84,10 +74,6 @@ pub struct Slide {
     /// Accompanying media
     #[garde(dive)]
     media: Option<Media>,
-    /// Time before answers get displayed
-    #[garde(custom(|v, _| validate_introduce_question(v)))]
-    #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
-    introduce_question: Duration,
     /// Time where players can answer the question
     #[garde(custom(|v, _| validate_time_limit(v)))]
     #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
@@ -97,13 +83,13 @@ pub struct Slide {
     points_awarded: u64,
     /// Accompanying answers
     #[garde(length(max = MAX_ANSWER_COUNT))]
-    answers: Vec<AnswerChoice>,
+    answers: Vec<String>,
 
     // State
     /// Storage of user answers combined with the time of answering
     #[serde(default)]
     #[garde(skip)]
-    user_answers: HashMap<Id, (usize, SystemTime)>,
+    user_answers: HashMap<Id, (String, SystemTime)>,
     /// Instant where answers were first displayed
     #[serde(default)]
     #[garde(skip)]
@@ -112,15 +98,6 @@ pub struct Slide {
     #[serde(default)]
     #[garde(skip)]
     state: SlideState,
-}
-
-/// Utility option with contextual meaning of visibility to the player or the host
-#[serde_with::serde_as]
-#[skip_serializing_none]
-#[derive(Debug, Serialize, Clone)]
-pub enum PossiblyHidden<T> {
-    Visible(T),
-    Hidden,
 }
 
 /// Messages sent to the listeners to update their pre-existing state with the slide state
@@ -142,22 +119,14 @@ pub enum UpdateMessage {
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
     },
-    /// Announcements of the possible answers for the players to choose
-    AnswersAnnouncement {
-        /// Time before the answering phase ends
-        #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
-        duration: Duration,
-        /// Possible answers to choose from
-        answers: Vec<PossiblyHidden<TextOrMedia>>,
-    },
     /// (HOST ONLY): Number of players who answered the question
     AnswersCount(usize),
     /// Results of the game including correct answers and statistics of how many they got chosen
     AnswersResults {
-        /// Same answers for the question displayed
-        answers: Vec<TextOrMedia>,
-        /// Correctness and statistics about the answers
-        results: Vec<AnswerChoiceResult>,
+        /// Correct answers
+        answers: Vec<String>,
+        /// Statistics of how many times each answer was chosen
+        results: Vec<(String, usize)>,
     },
 }
 
@@ -183,41 +152,15 @@ pub enum SyncMessage {
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
     },
-    /// Announcements of the possible answers for the players to choose
-    AnswersAnnouncement {
-        index: usize,
-        count: usize,
-        question: String,
-        media: Option<Media>,
-        /// Remaining time before the answering phase ends
-        #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
-        duration: Duration,
-        answers: Vec<PossiblyHidden<TextOrMedia>>,
-        answered_count: usize,
-    },
     /// Results of the game including correct answers and statistics of how many they got chosen
     AnswersResults {
         index: usize,
         count: usize,
         question: String,
         media: Option<Media>,
-        answers: Vec<TextOrMedia>,
-        results: Vec<AnswerChoiceResult>,
+        answers: Vec<String>,
+        results: Vec<(String, usize)>,
     },
-}
-
-/// Answer choice in the question slide
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AnswerChoice {
-    pub correct: bool,
-    pub content: TextOrMedia,
-}
-
-/// Correctness and statistic on how players answered the question
-#[derive(Debug, Serialize, Clone)]
-pub struct AnswerChoiceResult {
-    correct: bool,
-    count: usize,
 }
 
 impl Slide {
@@ -275,77 +218,10 @@ impl Slide {
                     count,
                     question: self.title.clone(),
                     media: self.media.clone(),
-                    duration: self.introduce_question,
+                    duration: self.time_limit,
                 }
                 .into(),
                 tunnel_finder,
-            );
-
-            schedule_message(
-                AlarmMessage::ProceedFromSlideIntoSlide {
-                    index,
-                    to: SlideState::Answers,
-                }
-                .into(),
-                self.introduce_question,
-            )
-        }
-    }
-
-    fn send_answers_announcements<
-        T: Tunnel,
-        F: Fn(Id) -> Option<T>,
-        S: FnMut(crate::AlarmMessage, time::Duration),
-    >(
-        &mut self,
-        team_manager: Option<&TeamManager>,
-        watchers: &Watchers,
-        mut schedule_message: S,
-        tunnel_finder: F,
-        index: usize,
-    ) {
-        if self.change_state(SlideState::Question, SlideState::Answers) {
-            self.start_timer();
-
-            watchers.announce_with(
-                |id, kind| {
-                    Some(
-                        UpdateMessage::AnswersAnnouncement {
-                            duration: self.time_limit,
-                            answers: self.get_answers_for_player(
-                                id,
-                                kind,
-                                {
-                                    match &team_manager {
-                                        Some(team_manager) => {
-                                            team_manager.team_members(id).map_or(1, |members| {
-                                                members
-                                                    .into_iter()
-                                                    .filter(|id| {
-                                                        watchers.is_alive(*id, &tunnel_finder)
-                                                    })
-                                                    .collect_vec()
-                                                    .len()
-                                            })
-                                        }
-                                        None => 1,
-                                    }
-                                },
-                                {
-                                    match &team_manager {
-                                        Some(team_manager) => team_manager
-                                            .team_index(id, |id| watchers.has_watcher(id))
-                                            .unwrap_or(0),
-                                        None => 0,
-                                    }
-                                },
-                                team_manager.is_some(),
-                            ),
-                        }
-                        .into(),
-                    )
-                },
-                &tunnel_finder,
             );
 
             schedule_message(
@@ -378,23 +254,17 @@ impl Slide {
         watchers: &Watchers,
         tunnel_finder: F,
     ) {
-        if self.change_state(SlideState::Answers, SlideState::AnswersResults) {
-            let answer_count = self
-                .user_answers
-                .iter()
-                .map(|(_, (answer, _))| *answer)
-                .counts();
+        if self.change_state(SlideState::Question, SlideState::AnswersResults) {
             watchers.announce(
                 &UpdateMessage::AnswersResults {
-                    answers: self.answers.iter().map(|a| a.content.clone()).collect_vec(),
+                    answers: self.answers.iter().cloned().collect_vec(),
                     results: self
-                        .answers
+                        .user_answers
                         .iter()
-                        .enumerate()
-                        .map(|(i, a)| AnswerChoiceResult {
-                            correct: a.correct,
-                            count: *answer_count.get(&i).unwrap_or(&0),
-                        })
+                        .map(|(_, (answer, _))| answer)
+                        .counts()
+                        .into_iter()
+                        .map(|(i, c)| (i.to_owned(), c))
                         .collect_vec(),
                 }
                 .into(),
@@ -417,7 +287,7 @@ impl Slide {
                 .user_answers
                 .iter()
                 .map(|(id, (answer, instant))| {
-                    let correct = self.answers.get(*answer).is_some_and(|x| x.correct);
+                    let correct = self.answers.iter().contains(answer);
                     (
                         *id,
                         if correct {
@@ -462,55 +332,13 @@ impl Slide {
         );
     }
 
-    fn get_answers_for_player(
-        &self,
-        _id: Id,
-        watcher_kind: ValueKind,
-        team_size: usize,
-        team_index: usize,
-        is_team: bool,
-    ) -> Vec<PossiblyHidden<TextOrMedia>> {
-        match watcher_kind {
-            ValueKind::Host | ValueKind::Unassigned => {
-                if is_team {
-                    std::iter::repeat(PossiblyHidden::Hidden)
-                        .take(self.answers.len())
-                        .collect_vec()
-                } else {
-                    self.answers
-                        .iter()
-                        .map(|answer_choice| PossiblyHidden::Visible(answer_choice.content.clone()))
-                        .collect_vec()
-                }
-            }
-            ValueKind::Player => match self.answers.len() {
-                0 => Vec::new(),
-                answer_count => {
-                    let adjusted_team_index = team_index % answer_count;
-
-                    self.answers
-                        .iter()
-                        .enumerate()
-                        .map(|(answer_index, answer_choice)| {
-                            if answer_index % team_size.min(answer_count) == adjusted_team_index {
-                                PossiblyHidden::Visible(answer_choice.content.clone())
-                            } else {
-                                PossiblyHidden::Hidden
-                            }
-                        })
-                        .collect_vec()
-                }
-            },
-        }
-    }
-
     pub fn state_message<T: Tunnel, F: Fn(Id) -> Option<T>>(
         &self,
-        watcher_id: Id,
-        watcher_kind: ValueKind,
-        team_manager: Option<&TeamManager>,
-        watchers: &Watchers,
-        tunnel_finder: F,
+        _watcher_id: Id,
+        _watcher_kind: ValueKind,
+        _team_manager: Option<&TeamManager>,
+        _watchers: &Watchers,
+        _tunnel_finder: F,
         index: usize,
         count: usize,
     ) -> SyncMessage {
@@ -520,78 +348,24 @@ impl Slide {
                 count,
                 question: self.title.clone(),
                 media: self.media.clone(),
-                duration: self.introduce_question
+                duration: self.time_limit
                     - self.timer().elapsed().expect("system clock went backwards"),
             },
-            SlideState::Answers => SyncMessage::AnswersAnnouncement {
+            SlideState::AnswersResults => SyncMessage::AnswersResults {
                 index,
                 count,
                 question: self.title.clone(),
                 media: self.media.clone(),
-                duration: {
-                    self.time_limit - self.timer().elapsed().expect("system clock went backwards")
-                },
-                answers: self.get_answers_for_player(
-                    watcher_id,
-                    watcher_kind,
-                    {
-                        match &team_manager {
-                            Some(team_manager) => {
-                                team_manager.team_members(watcher_id).map_or(1, |members| {
-                                    members
-                                        .into_iter()
-                                        .filter(|id| watchers.is_alive(*id, &tunnel_finder))
-                                        .collect_vec()
-                                        .len()
-                                })
-                            }
-                            None => 1,
-                        }
-                    },
-                    {
-                        match &team_manager {
-                            Some(team_manager) => team_manager
-                                .team_index(watcher_id, |id| watchers.has_watcher(id))
-                                .unwrap_or(0),
-                            None => 0,
-                        }
-                    },
-                    team_manager.is_some(),
-                ),
-                answered_count: {
-                    let left_set: HashSet<_> = watchers
-                        .specific_vec(ValueKind::Player, &tunnel_finder)
-                        .iter()
-                        .map(|(w, _, _)| w.to_owned())
-                        .collect();
-                    let right_set: HashSet<_> = self.user_answers.keys().copied().collect();
-                    left_set.intersection(&right_set).count()
-                },
-            },
-            SlideState::AnswersResults => {
-                let answer_count = self
+                answers: self.answers.clone(),
+                results: self
                     .user_answers
                     .iter()
                     .map(|(_, (answer, _))| answer)
-                    .counts();
-
-                SyncMessage::AnswersResults {
-                    index,
-                    count,
-                    question: self.title.clone(),
-                    media: self.media.clone(),
-                    answers: self.answers.iter().map(|a| a.content.clone()).collect_vec(),
-                    results: self
-                        .answers
-                        .iter()
-                        .enumerate()
-                        .map(|(i, a)| AnswerChoiceResult {
-                            correct: a.correct,
-                            count: *answer_count.get(&i).unwrap_or(&0),
-                        })
-                        .collect_vec(),
-                }
-            }
+                    .counts()
+                    .into_iter()
+                    .map(|(i, c)| (i.to_owned(), c))
+                    .collect_vec(),
+            },
         }
     }
 
@@ -623,23 +397,14 @@ impl Slide {
                     );
                 }
                 SlideState::Question => {
-                    self.send_answers_announcements(
-                        team_manager,
-                        watchers,
-                        schedule_message,
-                        tunnel_finder,
-                        index,
-                    );
+                    self.send_answers_results(watchers, tunnel_finder);
                 }
-                SlideState::Answers => self.send_answers_results(watchers, tunnel_finder),
                 SlideState::AnswersResults => {
                     self.add_scores(leaderboard, watchers, team_manager, tunnel_finder);
                     return true;
                 }
             },
-            IncomingMessage::Player(IncomingPlayerMessage::IndexAnswer(v))
-                if v < self.answers.len() =>
-            {
+            IncomingMessage::Player(IncomingPlayerMessage::StringAnswer(v)) => {
                 self.user_answers.insert(watcher_id, (v, SystemTime::now()));
                 let left_set: HashSet<_> = watchers
                     .specific_vec(ValueKind::Player, &tunnel_finder)
@@ -672,31 +437,19 @@ impl Slide {
         &mut self,
         _leaderboard: &mut Leaderboard,
         watchers: &Watchers,
-        team_manager: Option<&TeamManager>,
-        schedule_message: &mut S,
+        _team_manager: Option<&TeamManager>,
+        _schedule_message: &mut S,
         tunnel_finder: F,
         message: crate::AlarmMessage,
-        index: usize,
+        _index: usize,
         _count: usize,
     ) -> bool {
-        if let crate::AlarmMessage::MultipleChoice(AlarmMessage::ProceedFromSlideIntoSlide {
+        if let crate::AlarmMessage::TypeAnswer(AlarmMessage::ProceedFromSlideIntoSlide {
             index: _,
-            to,
+            to: SlideState::AnswersResults,
         }) = message
         {
-            match to {
-                SlideState::Answers => {
-                    self.send_answers_announcements(
-                        team_manager,
-                        watchers,
-                        schedule_message,
-                        tunnel_finder,
-                        index,
-                    );
-                }
-                SlideState::AnswersResults => self.send_answers_results(watchers, tunnel_finder),
-                _ => (),
-            }
+            self.send_answers_results(watchers, tunnel_finder);
         };
 
         false

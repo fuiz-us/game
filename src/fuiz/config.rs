@@ -11,7 +11,7 @@ use crate::{
     AlarmMessage, SyncMessage,
 };
 
-use super::{super::game::IncomingMessage, media::Media, multiple_choice};
+use super::{super::game::IncomingMessage, media::Media, multiple_choice, type_answer};
 
 const CONFIG: crate::config::fuiz::FuizConfig = crate::CONFIG.fuiz;
 
@@ -38,6 +38,7 @@ pub struct Fuiz {
 #[derive(Debug, Serialize, Deserialize, Clone, Validate)]
 pub enum Slide {
     MultipleChoice(#[garde(dive)] multiple_choice::Slide),
+    TypeAnswer(#[garde(dive)] type_answer::Slide),
 }
 
 impl Fuiz {
@@ -45,10 +46,14 @@ impl Fuiz {
         self.slides.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.slides.is_empty()
+    }
+
     pub fn play_slide<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration),
     >(
         &mut self,
         watchers: &Watchers,
@@ -65,7 +70,7 @@ impl Fuiz {
     pub fn receive_message<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration),
     >(
         &mut self,
         leaderboard: &mut Leaderboard,
@@ -121,7 +126,7 @@ impl Fuiz {
     pub fn receive_alarm<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration),
     >(
         &mut self,
         leaderboard: &mut Leaderboard,
@@ -152,11 +157,7 @@ impl Fuiz {
 }
 
 impl Slide {
-    pub fn play<
-        T: Tunnel,
-        F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration) -> (),
-    >(
+    pub fn play<T: Tunnel, F: Fn(Id) -> Option<T>, S: FnMut(AlarmMessage, web_time::Duration)>(
         &mut self,
         watchers: &Watchers,
         schedule_message: S,
@@ -168,13 +169,16 @@ impl Slide {
             Self::MultipleChoice(s) => {
                 s.play(watchers, schedule_message, tunnel_finder, index, count);
             }
+            Self::TypeAnswer(s) => {
+                s.play(watchers, schedule_message, tunnel_finder, index, count);
+            }
         }
     }
 
     pub fn receive_message<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration),
     >(
         &mut self,
         leaderboard: &mut Leaderboard,
@@ -189,6 +193,17 @@ impl Slide {
     ) -> bool {
         match self {
             Self::MultipleChoice(s) => s.receive_message(
+                watcher_id,
+                message,
+                leaderboard,
+                watchers,
+                team_manager,
+                schedule_message,
+                tunnel_finder,
+                index,
+                count,
+            ),
+            Self::TypeAnswer(s) => s.receive_message(
                 watcher_id,
                 message,
                 leaderboard,
@@ -222,13 +237,22 @@ impl Slide {
                 index,
                 count,
             )),
+            Self::TypeAnswer(s) => SyncMessage::TypeAnswer(s.state_message(
+                watcher_id,
+                watcher_kind,
+                team_manager,
+                watchers,
+                tunnel_finder,
+                index,
+                count,
+            )),
         }
     }
 
     fn receive_alarm<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration),
     >(
         &mut self,
         leaderboard: &mut Leaderboard,
@@ -242,6 +266,16 @@ impl Slide {
     ) -> bool {
         match self {
             Self::MultipleChoice(s) => s.receive_alarm(
+                leaderboard,
+                watchers,
+                team_manager,
+                schedule_message,
+                tunnel_finder,
+                message,
+                index,
+                count,
+            ),
+            Self::TypeAnswer(s) => s.receive_alarm(
                 leaderboard,
                 watchers,
                 team_manager,

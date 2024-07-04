@@ -6,7 +6,7 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
-use crate::watcher::Value;
+use crate::{fuiz::type_answer, watcher::Value};
 
 use super::{
     fuiz::{config::Fuiz, multiple_choice},
@@ -104,6 +104,7 @@ impl IncomingMessage {
 #[derive(Debug, Deserialize, Clone)]
 pub enum IncomingPlayerMessage {
     IndexAnswer(usize),
+    StringAnswer(String),
     ChooseTeammates(Vec<String>),
 }
 
@@ -305,16 +306,12 @@ impl Game {
     }
 
     /// starts the game
-    pub fn play<
-        T: Tunnel,
-        F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration) -> (),
-    >(
+    pub fn play<T: Tunnel, F: Fn(Id) -> Option<T>, S: FnMut(AlarmMessage, web_time::Duration)>(
         &mut self,
         schedule_message: S,
         tunnel_finder: F,
     ) {
-        if self.fuiz_config.len() > 0 {
+        if !self.fuiz_config.is_empty() {
             if let Some(team_manager) = &mut self.team_manager {
                 if matches!(self.state, State::WaitingScreen) {
                     team_manager.finalize(&mut self.watchers, &mut self.names, &tunnel_finder);
@@ -352,7 +349,7 @@ impl Game {
     pub fn finish_slide<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration),
     >(
         &mut self,
         schedule_message: S,
@@ -587,7 +584,7 @@ impl Game {
     pub fn receive_message<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration),
     >(
         &mut self,
         watcher_id: Id,
@@ -677,7 +674,7 @@ impl Game {
     pub fn receive_alarm<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration) -> (),
+        S: FnMut(AlarmMessage, web_time::Duration),
     >(
         &mut self,
         message: AlarmMessage,
@@ -695,7 +692,26 @@ impl Game {
                     if self.fuiz_config.receive_alarm(
                         &mut self.leaderboard,
                         &self.watchers,
-                        (&self.team_manager).as_ref(),
+                        self.team_manager.as_ref(),
+                        &mut schedule_message,
+                        &tunnel_finder,
+                        message,
+                        current_index,
+                    ) {
+                        self.finish_slide(schedule_message, tunnel_finder);
+                    }
+                }
+                _ => (),
+            },
+            AlarmMessage::TypeAnswer(type_answer::AlarmMessage::ProceedFromSlideIntoSlide {
+                index: slide_index,
+                to: _,
+            }) => match self.state {
+                State::Slide(current_index) if current_index == slide_index => {
+                    if self.fuiz_config.receive_alarm(
+                        &mut self.leaderboard,
+                        &self.watchers,
+                        self.team_manager.as_ref(),
                         &mut schedule_message,
                         &tunnel_finder,
                         message,

@@ -165,7 +165,7 @@ impl TeamManager {
                         },
                     );
 
-                    team_to_players.insert(team_id, players.iter().copied().collect());
+                    team_to_players.insert(team_id, players.to_vec());
 
                     (team_id, team_name)
                 })
@@ -186,7 +186,7 @@ impl TeamManager {
     }
 
     pub fn get_team(&self, player_id: Id) -> Option<Id> {
-        self.player_to_team.get(&player_id).map(|id| *id)
+        self.player_to_team.get(&player_id).copied()
     }
 
     pub fn set_preferences(&mut self, player_id: Id, preferences: Vec<Id>) {
@@ -247,7 +247,7 @@ impl TeamManager {
         self.get_team(player_id).and_then(|team_id| {
             self.team_to_players
                 .get(&team_id)
-                .map(|v| v.iter().map(|id| *id).collect_vec())
+                .map(|v| v.iter().copied().collect_vec())
         })
     }
 

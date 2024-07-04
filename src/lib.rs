@@ -22,6 +22,7 @@ pub mod watcher;
 pub enum SyncMessage {
     Game(game::SyncMessage),
     MultipleChoice(fuiz::multiple_choice::SyncMessage),
+    TypeAnswer(fuiz::type_answer::SyncMessage),
 }
 
 impl SyncMessage {
@@ -34,11 +35,13 @@ impl SyncMessage {
 pub enum UpdateMessage {
     Game(game::UpdateMessage),
     MultipleChoice(fuiz::multiple_choice::UpdateMessage),
+    TypeAnswer(fuiz::type_answer::UpdateMessage),
 }
 
 #[derive(Debug, Clone, derive_more::From, Serialize, Deserialize)]
 pub enum AlarmMessage {
     MultipleChoice(fuiz::multiple_choice::AlarmMessage),
+    TypeAnswer(fuiz::type_answer::AlarmMessage),
 }
 
 impl UpdateMessage {

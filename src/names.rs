@@ -57,6 +57,6 @@ impl Names {
     }
 
     pub fn get_id(&self, name: &str) -> Option<Id> {
-        self.reverse_mapping.get(name).map(|id| *id)
+        self.reverse_mapping.get(name).copied()
     }
 }
