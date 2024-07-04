@@ -282,12 +282,14 @@ impl Slide {
     ) {
         let starting_instant = self.timer();
 
+        let trimmed_answers: HashSet<_> = self.answers.iter().map(|x| x.trim()).collect();
+
         leaderboard.add_scores(
             &self
                 .user_answers
                 .iter()
                 .map(|(id, (answer, instant))| {
-                    let correct = self.answers.iter().contains(answer);
+                    let correct = trimmed_answers.contains(answer.trim());
                     (
                         *id,
                         if correct {
