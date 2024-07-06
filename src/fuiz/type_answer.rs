@@ -30,6 +30,8 @@ pub enum SlideState {
     Unstarted,
     /// Showing a question without answers
     Question,
+    /// Accepting player answers
+    Answers,
     /// Showing correct answers and their statistics
     AnswersResults,
 }
@@ -53,14 +55,22 @@ const CONFIG: crate::config::fuiz::type_answer::TypeAnswerConfig = crate::CONFIG
 
 const MIN_TITLE_LENGTH: usize = CONFIG.min_title_length.unsigned_abs() as usize;
 const MIN_TIME_LIMIT: u64 = CONFIG.min_time_limit.unsigned_abs();
+const MIN_INTRODUCE_QUESTION: u64 = CONFIG.min_introduce_question.unsigned_abs();
 
 const MAX_TIME_LIMIT: u64 = CONFIG.max_time_limit.unsigned_abs();
 const MAX_TITLE_LENGTH: usize = CONFIG.max_title_length.unsigned_abs() as usize;
+const MAX_INTRODUCE_QUESTION: u64 = CONFIG.max_introduce_question.unsigned_abs();
 
 const MAX_ANSWER_COUNT: usize = CONFIG.max_answer_count.unsigned_abs() as usize;
+const MAX_ANSWER_TEXT_LENGTH: usize =
+    crate::CONFIG.fuiz.answer_text.max_length.unsigned_abs() as usize;
 
 fn validate_time_limit(val: &Duration) -> ValidationResult {
     validate_duration::<MIN_TIME_LIMIT, MAX_TIME_LIMIT>("time_limit", val)
+}
+
+fn validate_introduce_question(val: &Duration) -> ValidationResult {
+    validate_duration::<MIN_INTRODUCE_QUESTION, MAX_INTRODUCE_QUESTION>("introduce_question", val)
 }
 
 /// Presenting a multiple choice question that presents a question then the answers with optional accompanying media
@@ -69,11 +79,16 @@ fn validate_time_limit(val: &Duration) -> ValidationResult {
 #[derive(Debug, Clone, Default, Serialize, serde::Deserialize, Validate)]
 pub struct Slide {
     /// The question title, represents what's being asked
-    #[garde(length(min = MIN_TITLE_LENGTH, max = MAX_TITLE_LENGTH))]
+    #[garde(length(chars, min = MIN_TITLE_LENGTH, max = MAX_TITLE_LENGTH))]
     title: String,
     /// Accompanying media
     #[garde(dive)]
     media: Option<Media>,
+    /// Time before the answers are displayed
+    #[garde(custom(|v, _| validate_introduce_question(v)))]
+    #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
+    #[serde(default)]
+    introduce_question: Duration,
     /// Time where players can answer the question
     #[garde(custom(|v, _| validate_time_limit(v)))]
     #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
@@ -82,8 +97,12 @@ pub struct Slide {
     #[garde(skip)]
     points_awarded: u64,
     /// Accompanying answers
-    #[garde(length(max = MAX_ANSWER_COUNT))]
+    #[garde(length(max = MAX_ANSWER_COUNT), inner(length(chars, max = MAX_ANSWER_TEXT_LENGTH)))]
     answers: Vec<String>,
+    /// Case-sensitive check for answers
+    #[garde(skip)]
+    #[serde(default)]
+    case_sensitive: bool,
 
     // State
     /// Storage of user answers combined with the time of answering
@@ -118,6 +137,8 @@ pub enum UpdateMessage {
         /// Time before answers will be release
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
+        /// Accept answers from players
+        accept_answers: bool,
     },
     /// (HOST ONLY): Number of players who answered the question
     AnswersCount(usize),
@@ -151,6 +172,7 @@ pub enum SyncMessage {
         /// Remaining time for the question to be displayed without its answers
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
         duration: Duration,
+        accept_answers: bool,
     },
     /// Results of the game including correct answers and statistics of how many they got chosen
     AnswersResults {
@@ -210,6 +232,56 @@ impl Slide {
         count: usize,
     ) {
         if self.change_state(SlideState::Unstarted, SlideState::Question) {
+            if self.introduce_question.is_zero() {
+                self.send_accepting_answers(
+                    watchers,
+                    schedule_message,
+                    tunnel_finder,
+                    index,
+                    count,
+                );
+                return;
+            }
+
+            self.start_timer();
+
+            watchers.announce(
+                &UpdateMessage::QuestionAnnouncment {
+                    index,
+                    count,
+                    question: self.title.clone(),
+                    media: self.media.clone(),
+                    duration: self.introduce_question,
+                    accept_answers: false,
+                }
+                .into(),
+                tunnel_finder,
+            );
+
+            schedule_message(
+                AlarmMessage::ProceedFromSlideIntoSlide {
+                    index,
+                    to: SlideState::Answers,
+                }
+                .into(),
+                self.introduce_question,
+            )
+        }
+    }
+
+    fn send_accepting_answers<
+        T: Tunnel,
+        F: Fn(Id) -> Option<T>,
+        S: FnMut(crate::AlarmMessage, time::Duration),
+    >(
+        &mut self,
+        watchers: &Watchers,
+        mut schedule_message: S,
+        tunnel_finder: F,
+        index: usize,
+        count: usize,
+    ) {
+        if self.change_state(SlideState::Question, SlideState::Answers) {
             self.start_timer();
 
             watchers.announce(
@@ -219,6 +291,7 @@ impl Slide {
                     question: self.title.clone(),
                     media: self.media.clone(),
                     duration: self.time_limit,
+                    accept_answers: true,
                 }
                 .into(),
                 tunnel_finder,
@@ -282,14 +355,27 @@ impl Slide {
     ) {
         let starting_instant = self.timer();
 
-        let trimmed_answers: HashSet<_> = self.answers.iter().map(|x| x.trim()).collect();
+        fn clean_answer(answer: &str, case_sensitive: bool) -> String {
+            if case_sensitive {
+                answer.trim().to_string()
+            } else {
+                answer.trim().to_lowercase()
+            }
+        }
+
+        let cleaned_answers: HashSet<_> = self
+            .answers
+            .iter()
+            .map(|answer| clean_answer(answer, self.case_sensitive))
+            .collect();
 
         leaderboard.add_scores(
             &self
                 .user_answers
                 .iter()
                 .map(|(id, (answer, instant))| {
-                    let correct = trimmed_answers.contains(answer.trim());
+                    let correct =
+                        cleaned_answers.contains(&clean_answer(answer, self.case_sensitive));
                     (
                         *id,
                         if correct {
@@ -350,8 +436,18 @@ impl Slide {
                 count,
                 question: self.title.clone(),
                 media: self.media.clone(),
+                duration: self.introduce_question
+                    - self.timer().elapsed().expect("system clock went backwards"),
+                accept_answers: false,
+            },
+            SlideState::Answers => SyncMessage::QuestionAnnouncment {
+                index,
+                count,
+                question: self.title.clone(),
+                media: self.media.clone(),
                 duration: self.time_limit
                     - self.timer().elapsed().expect("system clock went backwards"),
+                accept_answers: true,
             },
             SlideState::AnswersResults => SyncMessage::AnswersResults {
                 index,
@@ -399,6 +495,15 @@ impl Slide {
                     );
                 }
                 SlideState::Question => {
+                    self.send_accepting_answers(
+                        watchers,
+                        schedule_message,
+                        tunnel_finder,
+                        index,
+                        count,
+                    );
+                }
+                SlideState::Answers => {
                     self.send_answers_results(watchers, tunnel_finder);
                 }
                 SlideState::AnswersResults => {
@@ -440,18 +545,32 @@ impl Slide {
         _leaderboard: &mut Leaderboard,
         watchers: &Watchers,
         _team_manager: Option<&TeamManager>,
-        _schedule_message: &mut S,
+        schedule_message: &mut S,
         tunnel_finder: F,
         message: crate::AlarmMessage,
-        _index: usize,
-        _count: usize,
+        index: usize,
+        count: usize,
     ) -> bool {
         if let crate::AlarmMessage::TypeAnswer(AlarmMessage::ProceedFromSlideIntoSlide {
             index: _,
-            to: SlideState::AnswersResults,
+            to,
         }) = message
         {
-            self.send_answers_results(watchers, tunnel_finder);
+            match to {
+                SlideState::Answers => {
+                    self.send_accepting_answers(
+                        watchers,
+                        schedule_message,
+                        tunnel_finder,
+                        index,
+                        count,
+                    );
+                }
+                SlideState::AnswersResults => {
+                    self.send_answers_results(watchers, tunnel_finder);
+                }
+                _ => (),
+            }
         };
 
         false

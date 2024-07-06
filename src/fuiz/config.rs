@@ -56,6 +56,7 @@ impl Fuiz {
         S: FnMut(AlarmMessage, web_time::Duration),
     >(
         &mut self,
+        team_manager: Option<&TeamManager>,
         watchers: &Watchers,
         schedule_message: S,
         tunnel_finder: F,
@@ -63,7 +64,14 @@ impl Fuiz {
     ) {
         let count = self.len();
         if let Some(slide) = self.slides.get_mut(index) {
-            slide.play(watchers, schedule_message, tunnel_finder, index, count);
+            slide.play(
+                team_manager,
+                watchers,
+                schedule_message,
+                tunnel_finder,
+                index,
+                count,
+            );
         }
     }
 
@@ -159,6 +167,7 @@ impl Fuiz {
 impl Slide {
     pub fn play<T: Tunnel, F: Fn(Id) -> Option<T>, S: FnMut(AlarmMessage, web_time::Duration)>(
         &mut self,
+        team_manager: Option<&TeamManager>,
         watchers: &Watchers,
         schedule_message: S,
         tunnel_finder: F,
@@ -167,7 +176,14 @@ impl Slide {
     ) {
         match self {
             Self::MultipleChoice(s) => {
-                s.play(watchers, schedule_message, tunnel_finder, index, count);
+                s.play(
+                    team_manager,
+                    watchers,
+                    schedule_message,
+                    tunnel_finder,
+                    index,
+                    count,
+                );
             }
             Self::TypeAnswer(s) => {
                 s.play(watchers, schedule_message, tunnel_finder, index, count);

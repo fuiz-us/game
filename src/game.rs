@@ -6,7 +6,10 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
-use crate::{fuiz::type_answer, watcher::Value};
+use crate::{
+    fuiz::{order, type_answer},
+    watcher::Value,
+};
 
 use super::{
     fuiz::{config::Fuiz, multiple_choice},
@@ -105,6 +108,7 @@ impl IncomingMessage {
 pub enum IncomingPlayerMessage {
     IndexAnswer(usize),
     StringAnswer(String),
+    StringArrayAnswer(Vec<String>),
     ChooseTeammates(Vec<String>),
 }
 
@@ -338,8 +342,13 @@ impl Game {
                 }
             }
             self.set_state(State::Slide(0));
-            self.fuiz_config
-                .play_slide(&self.watchers, schedule_message, tunnel_finder, 0);
+            self.fuiz_config.play_slide(
+                self.team_manager.as_ref(),
+                &self.watchers,
+                schedule_message,
+                tunnel_finder,
+                0,
+            );
         } else {
             self.announce_summary(tunnel_finder);
         }
@@ -360,6 +369,7 @@ impl Game {
                 if index + 1 < self.fuiz_config.len() {
                     self.state = State::Slide(index + 1);
                     self.fuiz_config.play_slide(
+                        self.team_manager.as_ref(),
                         &self.watchers,
                         schedule_message,
                         &tunnel_finder,
@@ -654,6 +664,7 @@ impl Game {
                         } else {
                             self.set_state(State::Slide(index + 1));
                             self.fuiz_config.play_slide(
+                                self.team_manager.as_ref(),
                                 &self.watchers,
                                 schedule_message,
                                 tunnel_finder,
@@ -704,6 +715,25 @@ impl Game {
                 _ => (),
             },
             AlarmMessage::TypeAnswer(type_answer::AlarmMessage::ProceedFromSlideIntoSlide {
+                index: slide_index,
+                to: _,
+            }) => match self.state {
+                State::Slide(current_index) if current_index == slide_index => {
+                    if self.fuiz_config.receive_alarm(
+                        &mut self.leaderboard,
+                        &self.watchers,
+                        self.team_manager.as_ref(),
+                        &mut schedule_message,
+                        &tunnel_finder,
+                        message,
+                        current_index,
+                    ) {
+                        self.finish_slide(schedule_message, tunnel_finder);
+                    }
+                }
+                _ => (),
+            },
+            AlarmMessage::Order(order::AlarmMessage::ProceedFromSlideIntoSlide {
                 index: slide_index,
                 to: _,
             }) => match self.state {
