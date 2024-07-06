@@ -169,7 +169,7 @@ pub enum UpdateMessage {
         answers: Vec<String>,
         /// Time where players can answer the question
         #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
-        time_limit: Duration,
+        duration: Duration,
     },
     /// (HOST ONLY): Number of players who answered the question
     AnswersCount(usize),
@@ -334,7 +334,7 @@ impl Slide {
                     axis_labels: self.axis_labels.clone(),
                     media: self.media.clone(),
                     answers: self.shuffled_answers.clone(),
-                    time_limit: self.time_limit,
+                    duration: self.time_limit,
                 }
                 .into(),
                 tunnel_finder,
