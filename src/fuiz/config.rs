@@ -11,7 +11,7 @@ use crate::{
     AlarmMessage, SyncMessage,
 };
 
-use super::{super::game::IncomingMessage, media::Media, multiple_choice, type_answer};
+use super::{super::game::IncomingMessage, media::Media, multiple_choice, order, type_answer};
 
 const CONFIG: crate::config::fuiz::FuizConfig = crate::CONFIG.fuiz;
 
@@ -39,6 +39,7 @@ pub struct Fuiz {
 pub enum Slide {
     MultipleChoice(#[garde(dive)] multiple_choice::Slide),
     TypeAnswer(#[garde(dive)] type_answer::Slide),
+    Order(#[garde(dive)] order::Slide),
 }
 
 impl Fuiz {
@@ -188,6 +189,9 @@ impl Slide {
             Self::TypeAnswer(s) => {
                 s.play(watchers, schedule_message, tunnel_finder, index, count);
             }
+            Self::Order(s) => {
+                s.play(watchers, schedule_message, tunnel_finder, index, count);
+            }
         }
     }
 
@@ -230,6 +234,17 @@ impl Slide {
                 index,
                 count,
             ),
+            Self::Order(s) => s.receive_message(
+                watcher_id,
+                message,
+                leaderboard,
+                watchers,
+                team_manager,
+                schedule_message,
+                tunnel_finder,
+                index,
+                count,
+            ),
         }
     }
 
@@ -254,6 +269,15 @@ impl Slide {
                 count,
             )),
             Self::TypeAnswer(s) => SyncMessage::TypeAnswer(s.state_message(
+                watcher_id,
+                watcher_kind,
+                team_manager,
+                watchers,
+                tunnel_finder,
+                index,
+                count,
+            )),
+            Self::Order(s) => SyncMessage::Order(s.state_message(
                 watcher_id,
                 watcher_kind,
                 team_manager,
@@ -292,6 +316,16 @@ impl Slide {
                 count,
             ),
             Self::TypeAnswer(s) => s.receive_alarm(
+                leaderboard,
+                watchers,
+                team_manager,
+                schedule_message,
+                tunnel_finder,
+                message,
+                index,
+                count,
+            ),
+            Self::Order(s) => s.receive_alarm(
                 leaderboard,
                 watchers,
                 team_manager,
