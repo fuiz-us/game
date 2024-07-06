@@ -89,7 +89,7 @@ impl TeamManager {
                     )
                 })
                 .sorted()
-                .group_by(|(smallest_moot, _)| *smallest_moot)
+                .chunk_by(|(smallest_moot, _)| *smallest_moot)
                 .into_iter()
                 .map(|(_, g)| {
                     // to guard against attacks

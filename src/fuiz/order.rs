@@ -321,7 +321,7 @@ impl Slide {
         count: usize,
     ) {
         if self.change_state(SlideState::Answers, SlideState::AnswersResults) {
-            self.shuffled_answers = self.answers.clone();
+            self.shuffled_answers.clone_from(&self.answers);
             fastrand::shuffle(&mut self.shuffled_answers);
 
             self.start_timer();

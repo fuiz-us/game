@@ -374,7 +374,7 @@ dependencies = [
  "fastrand",
  "garde",
  "heck",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "kinded",
  "log",
  "num-integer",
@@ -394,9 +394,9 @@ dependencies = [
 
 [[package]]
 name = "garde"
-version = "0.18.0"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fa8fb3ffe035745c6194540b2064b2fe275f32367fbb4eb026024b7921e2e5"
+checksum = "0a3233677ea1554a48235d81bb59d2a41654969a8e29a1316c48105fd1701693"
 dependencies = [
  "compact_str",
  "garde_derive",
@@ -405,9 +405,9 @@ dependencies = [
 
 [[package]]
 name = "garde_derive"
-version = "0.18.0"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cf62650515830c41553b72bd49ec20fb120226f9277c7f2847f071cf998325b"
+checksum = "8796f322e43105351a7ec35148807b32b5b6058a539656dafe4a5b456d5ca41f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -536,15 +536,6 @@ name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
 dependencies = [
  "either",
 ]
