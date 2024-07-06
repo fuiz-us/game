@@ -140,7 +140,7 @@ pub struct Slide {
 #[derive(Debug, Serialize, Clone)]
 pub enum UpdateMessage {
     /// Announcement of the question without its answers
-    QuestionAnnouncment {
+    QuestionAnnouncement {
         /// Index of the slide (0-indexing)
         index: usize,
         /// Total count of slides
@@ -155,16 +155,8 @@ pub enum UpdateMessage {
     },
     /// Announcement of the question with its answers
     AnswersAnnouncement {
-        /// Index of the slide (0-indexing)
-        index: usize,
-        /// Total count of slides
-        count: usize,
-        /// Question text (i.e. what's being asked)
-        question: String,
         /// Labels for the axis
         axis_labels: AxisLabels,
-        /// Accompanying media
-        media: Option<Media>,
         /// Answers in a shuffled order
         answers: Vec<String>,
         /// Time where players can answer the question
@@ -195,7 +187,7 @@ pub enum AlarmMessage {
 #[derive(Debug, Serialize, Clone)]
 pub enum SyncMessage {
     /// Announcement of the question without its answers
-    QuestionAnnouncment {
+    QuestionAnnouncement {
         index: usize,
         count: usize,
         question: String,
@@ -276,7 +268,7 @@ impl Slide {
     ) {
         if self.change_state(SlideState::Unstarted, SlideState::Question) {
             watchers.announce(
-                &UpdateMessage::QuestionAnnouncment {
+                &UpdateMessage::QuestionAnnouncement {
                     index,
                     count,
                     question: self.title.clone(),
@@ -318,7 +310,7 @@ impl Slide {
         tunnel_finder: F,
         mut schedule_message: S,
         index: usize,
-        count: usize,
+        _count: usize,
     ) {
         if self.change_state(SlideState::Question, SlideState::Answers) {
             self.shuffled_answers.clone_from(&self.answers);
@@ -328,11 +320,7 @@ impl Slide {
 
             watchers.announce(
                 &UpdateMessage::AnswersAnnouncement {
-                    index,
-                    count,
-                    question: self.title.clone(),
                     axis_labels: self.axis_labels.clone(),
-                    media: self.media.clone(),
                     answers: self.shuffled_answers.clone(),
                     duration: self.time_limit,
                 }
@@ -458,7 +446,7 @@ impl Slide {
         count: usize,
     ) -> SyncMessage {
         match self.state() {
-            SlideState::Unstarted | SlideState::Question => SyncMessage::QuestionAnnouncment {
+            SlideState::Unstarted | SlideState::Question => SyncMessage::QuestionAnnouncement {
                 index,
                 count,
                 question: self.title.clone(),

@@ -125,7 +125,7 @@ pub struct Slide {
 #[derive(Debug, Serialize, Clone)]
 pub enum UpdateMessage {
     /// Announcement of the question without its answers
-    QuestionAnnouncment {
+    QuestionAnnouncement {
         /// Index of the slide (0-indexing)
         index: usize,
         /// Total count of slides
@@ -164,7 +164,7 @@ pub enum AlarmMessage {
 #[derive(Debug, Serialize, Clone)]
 pub enum SyncMessage {
     /// Announcement of the question without its answers
-    QuestionAnnouncment {
+    QuestionAnnouncement {
         index: usize,
         count: usize,
         question: String,
@@ -246,7 +246,7 @@ impl Slide {
             self.start_timer();
 
             watchers.announce(
-                &UpdateMessage::QuestionAnnouncment {
+                &UpdateMessage::QuestionAnnouncement {
                     index,
                     count,
                     question: self.title.clone(),
@@ -285,7 +285,7 @@ impl Slide {
             self.start_timer();
 
             watchers.announce(
-                &UpdateMessage::QuestionAnnouncment {
+                &UpdateMessage::QuestionAnnouncement {
                     index,
                     count,
                     question: self.title.clone(),
@@ -431,7 +431,7 @@ impl Slide {
         count: usize,
     ) -> SyncMessage {
         match self.state() {
-            SlideState::Unstarted | SlideState::Question => SyncMessage::QuestionAnnouncment {
+            SlideState::Unstarted | SlideState::Question => SyncMessage::QuestionAnnouncement {
                 index,
                 count,
                 question: self.title.clone(),
@@ -440,7 +440,7 @@ impl Slide {
                     - self.timer().elapsed().expect("system clock went backwards"),
                 accept_answers: false,
             },
-            SlideState::Answers => SyncMessage::QuestionAnnouncment {
+            SlideState::Answers => SyncMessage::QuestionAnnouncement {
                 index,
                 count,
                 question: self.title.clone(),
