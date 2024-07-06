@@ -320,7 +320,7 @@ impl Slide {
         index: usize,
         count: usize,
     ) {
-        if self.change_state(SlideState::Answers, SlideState::AnswersResults) {
+        if self.change_state(SlideState::Question, SlideState::Answers) {
             self.shuffled_answers.clone_from(&self.answers);
             fastrand::shuffle(&mut self.shuffled_answers);
 
@@ -370,7 +370,7 @@ impl Slide {
         watchers: &Watchers,
         tunnel_finder: F,
     ) {
-        if self.change_state(SlideState::Question, SlideState::AnswersResults) {
+        if self.change_state(SlideState::Answers, SlideState::AnswersResults) {
             let correct_count = self
                 .user_answers
                 .iter()
