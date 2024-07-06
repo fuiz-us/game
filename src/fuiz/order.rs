@@ -573,18 +573,32 @@ impl Slide {
         _leaderboard: &mut Leaderboard,
         watchers: &Watchers,
         _team_manager: Option<&TeamManager>,
-        _schedule_message: &mut S,
+        schedule_message: &mut S,
         tunnel_finder: F,
         message: crate::AlarmMessage,
-        _index: usize,
-        _count: usize,
+        index: usize,
+        count: usize,
     ) -> bool {
         if let crate::AlarmMessage::Order(AlarmMessage::ProceedFromSlideIntoSlide {
             index: _,
-            to: SlideState::AnswersResults,
+            to,
         }) = message
         {
-            self.send_answers_results(watchers, tunnel_finder);
+            match to {
+                SlideState::Answers => {
+                    self.send_answers_announcements(
+                        watchers,
+                        tunnel_finder,
+                        schedule_message,
+                        index,
+                        count,
+                    );
+                }
+                SlideState::AnswersResults => {
+                    self.send_answers_results(watchers, tunnel_finder);
+                }
+                _ => {}
+            }
         };
 
         false
