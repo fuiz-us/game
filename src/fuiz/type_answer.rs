@@ -327,7 +327,7 @@ impl Slide {
         watchers: &Watchers,
         tunnel_finder: F,
     ) {
-        if self.change_state(SlideState::Question, SlideState::AnswersResults) {
+        if self.change_state(SlideState::Answers, SlideState::AnswersResults) {
             watchers.announce(
                 &UpdateMessage::AnswersResults {
                     answers: self.answers.iter().cloned().collect_vec(),
