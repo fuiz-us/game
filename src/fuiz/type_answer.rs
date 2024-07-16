@@ -148,6 +148,8 @@ pub enum UpdateMessage {
         answers: Vec<String>,
         /// Statistics of how many times each answer was chosen
         results: Vec<(String, usize)>,
+        /// Case-sensitive check for answers
+        case_sensitive: bool,
     },
 }
 
@@ -182,7 +184,16 @@ pub enum SyncMessage {
         media: Option<Media>,
         answers: Vec<String>,
         results: Vec<(String, usize)>,
+        case_sensitive: bool,
     },
+}
+
+fn clean_answer(answer: &str, case_sensitive: bool) -> String {
+    if case_sensitive {
+        answer.trim().to_string()
+    } else {
+        answer.trim().to_lowercase()
+    }
 }
 
 impl Slide {
@@ -330,15 +341,20 @@ impl Slide {
         if self.change_state(SlideState::Answers, SlideState::AnswersResults) {
             watchers.announce(
                 &UpdateMessage::AnswersResults {
-                    answers: self.answers.iter().cloned().collect_vec(),
+                    answers: self
+                        .answers
+                        .iter()
+                        .map(|answer| clean_answer(answer, self.case_sensitive))
+                        .collect_vec(),
                     results: self
                         .user_answers
                         .iter()
-                        .map(|(_, (answer, _))| answer)
+                        .map(|(_, (answer, _))| clean_answer(answer, self.case_sensitive))
                         .counts()
                         .into_iter()
                         .map(|(i, c)| (i.to_owned(), c))
                         .collect_vec(),
+                    case_sensitive: self.case_sensitive,
                 }
                 .into(),
                 tunnel_finder,
@@ -354,14 +370,6 @@ impl Slide {
         tunnel_finder: F,
     ) {
         let starting_instant = self.timer();
-
-        fn clean_answer(answer: &str, case_sensitive: bool) -> String {
-            if case_sensitive {
-                answer.trim().to_string()
-            } else {
-                answer.trim().to_lowercase()
-            }
-        }
 
         let cleaned_answers: HashSet<_> = self
             .answers
@@ -454,15 +462,20 @@ impl Slide {
                 count,
                 question: self.title.clone(),
                 media: self.media.clone(),
-                answers: self.answers.clone(),
+                answers: self
+                    .answers
+                    .iter()
+                    .map(|answer| clean_answer(answer, self.case_sensitive))
+                    .collect_vec(),
                 results: self
                     .user_answers
                     .iter()
-                    .map(|(_, (answer, _))| answer)
+                    .map(|(_, (answer, _))| clean_answer(answer, self.case_sensitive))
                     .counts()
                     .into_iter()
                     .map(|(i, c)| (i.to_owned(), c))
                     .collect_vec(),
+                case_sensitive: self.case_sensitive,
             },
         }
     }
