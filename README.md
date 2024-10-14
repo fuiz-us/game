@@ -2,9 +2,9 @@
 
 Host live quizzes freely
 
-<img src="https://gitlab.com/opencode-mit/fuiz-website/-/raw/main/static/favicon.svg?ref_type=heads" width="128" height="128" alt="Switcheroo icon">
+<img src="https://gitlab.com/opencode-mit/fuiz/website/-/raw/main/static/favicon.svg?ref_type=heads" width="128" height="128" alt="Switcheroo icon">
 
-[![License](https://img.shields.io/gitlab/license/opencode-mit/fuiz?style=for-the-badge)](https://gitlab.com/opencode-mit/fuiz/-/raw/main/LICENSE)
+[![License](https://img.shields.io/gitlab/license/opencode-mit/fuiz/game?style=for-the-badge)](https://gitlab.com/opencode-mit/fuiz/game/-/raw/main/LICENSE)
 
 ## Developing
 
