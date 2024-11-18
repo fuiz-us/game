@@ -276,7 +276,7 @@ impl Slide {
                     duration: self.introduce_question,
                 }
                 .into(),
-                |id| tunnel_finder(id),
+                &tunnel_finder,
             );
 
             if self.introduce_question.is_zero() {
