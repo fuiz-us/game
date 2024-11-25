@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
 use crate::{
-    fuiz::{order, type_answer},
+    fuiz::{config::CurrentSlide, order, type_answer},
     watcher::Value,
 };
 
@@ -22,13 +22,13 @@ use super::{
 };
 
 /// Game Phase
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum State {
     /// A waiting screen where current players are displayed
     WaitingScreen,
     /// (TEAM ONLY): A waiting screen where current teams are displayed
     TeamDisplay,
-    Slide(usize),
+    Slide(CurrentSlide),
     Leaderboard(usize),
     Done,
 }
@@ -315,7 +315,7 @@ impl Game {
         schedule_message: S,
         tunnel_finder: F,
     ) {
-        if !self.fuiz_config.is_empty() {
+        if let Some(slide) = self.fuiz_config.slides.first() {
             if let Some(team_manager) = &mut self.team_manager {
                 if matches!(self.state, State::WaitingScreen) {
                     team_manager.finalize(&mut self.watchers, &mut self.names, &tunnel_finder);
@@ -341,14 +341,22 @@ impl Game {
                     return;
                 }
             }
-            self.set_state(State::Slide(0));
-            self.fuiz_config.play_slide(
+
+            let mut current_slide = CurrentSlide {
+                index: 0,
+                state: slide.to_state(),
+            };
+
+            current_slide.state.play(
                 self.team_manager.as_ref(),
                 &self.watchers,
                 schedule_message,
                 tunnel_finder,
                 0,
+                self.fuiz_config.len(),
             );
+
+            self.set_state(State::Slide(current_slide));
         } else {
             self.announce_summary(tunnel_finder);
         }
@@ -364,17 +372,24 @@ impl Game {
         schedule_message: S,
         tunnel_finder: F,
     ) {
-        if let State::Slide(index) = self.state {
+        if let State::Slide(CurrentSlide { index, state: _ }) = self.state {
             if self.options.no_leaderboard {
-                if index + 1 < self.fuiz_config.len() {
-                    self.state = State::Slide(index + 1);
-                    self.fuiz_config.play_slide(
+                if let Some(slide) = self.fuiz_config.slides.get(index + 1) {
+                    let mut state = slide.to_state();
+
+                    state.play(
                         self.team_manager.as_ref(),
                         &self.watchers,
                         schedule_message,
                         &tunnel_finder,
                         index + 1,
+                        self.fuiz_config.len(),
                     );
+
+                    self.state = State::Slide(CurrentSlide {
+                        index: index + 1,
+                        state,
+                    });
                 } else {
                     self.announce_summary(tunnel_finder);
                 }
@@ -637,39 +652,48 @@ impl Game {
                     );
                 }
             }
-            message => match self.state {
+            message => match &mut self.state {
                 State::WaitingScreen | State::TeamDisplay => {
                     if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
                         self.play(schedule_message, &tunnel_finder);
                     }
                 }
-                State::Slide(index) => {
-                    if self.fuiz_config.receive_message(
+                State::Slide(CurrentSlide { index, state }) => {
+                    if state.receive_message(
                         &mut self.leaderboard,
                         &self.watchers,
                         self.team_manager.as_ref(),
                         &mut schedule_message,
-                        &tunnel_finder,
                         watcher_id,
+                        &tunnel_finder,
                         message,
-                        index,
+                        *index,
+                        self.fuiz_config.len(),
                     ) {
                         self.finish_slide(schedule_message, tunnel_finder);
                     }
                 }
                 State::Leaderboard(index) => {
                     if let IncomingMessage::Host(IncomingHostMessage::Next) = message {
-                        if index + 1 >= self.fuiz_config.len() {
-                            self.announce_summary(&tunnel_finder);
-                        } else {
-                            self.set_state(State::Slide(index + 1));
-                            self.fuiz_config.play_slide(
+                        let next_index = *index + 1;
+                        if let Some(slide) = self.fuiz_config.slides.get(next_index) {
+                            let mut state = slide.to_state();
+
+                            state.play(
                                 self.team_manager.as_ref(),
                                 &self.watchers,
                                 schedule_message,
-                                tunnel_finder,
-                                index + 1,
+                                &tunnel_finder,
+                                next_index,
+                                self.fuiz_config.len(),
                             );
+
+                            self.set_state(State::Slide(CurrentSlide {
+                                index: next_index,
+                                state,
+                            }));
+                        } else {
+                            self.announce_summary(&tunnel_finder);
                         }
                     }
                 }
@@ -698,16 +722,20 @@ impl Game {
                     index: slide_index,
                     to: _,
                 },
-            ) => match self.state {
-                State::Slide(current_index) if current_index == slide_index => {
-                    if self.fuiz_config.receive_alarm(
+            ) => match &mut self.state {
+                State::Slide(CurrentSlide {
+                    index: current_index,
+                    state,
+                }) if *current_index == slide_index => {
+                    if state.receive_alarm(
                         &mut self.leaderboard,
                         &self.watchers,
                         self.team_manager.as_ref(),
                         &mut schedule_message,
                         &tunnel_finder,
                         message,
-                        current_index,
+                        *current_index,
+                        self.fuiz_config.len(),
                     ) {
                         self.finish_slide(schedule_message, tunnel_finder);
                     }
@@ -717,16 +745,20 @@ impl Game {
             AlarmMessage::TypeAnswer(type_answer::AlarmMessage::ProceedFromSlideIntoSlide {
                 index: slide_index,
                 to: _,
-            }) => match self.state {
-                State::Slide(current_index) if current_index == slide_index => {
-                    if self.fuiz_config.receive_alarm(
+            }) => match &mut self.state {
+                State::Slide(CurrentSlide {
+                    index: current_index,
+                    state,
+                }) if *current_index == slide_index => {
+                    if state.receive_alarm(
                         &mut self.leaderboard,
                         &self.watchers,
                         self.team_manager.as_ref(),
                         &mut schedule_message,
                         &tunnel_finder,
                         message,
-                        current_index,
+                        *current_index,
+                        self.fuiz_config.len(),
                     ) {
                         self.finish_slide(schedule_message, tunnel_finder);
                     }
@@ -736,16 +768,20 @@ impl Game {
             AlarmMessage::Order(order::AlarmMessage::ProceedFromSlideIntoSlide {
                 index: slide_index,
                 to: _,
-            }) => match self.state {
-                State::Slide(current_index) if current_index == slide_index => {
-                    if self.fuiz_config.receive_alarm(
+            }) => match &mut self.state {
+                State::Slide(CurrentSlide {
+                    index: current_index,
+                    state,
+                }) if *current_index == slide_index => {
+                    if state.receive_alarm(
                         &mut self.leaderboard,
                         &self.watchers,
                         self.team_manager.as_ref(),
                         &mut schedule_message,
                         &tunnel_finder,
                         message,
-                        current_index,
+                        *current_index,
+                        self.fuiz_config.len(),
                     ) {
                         self.finish_slide(schedule_message, tunnel_finder);
                     }
@@ -762,7 +798,7 @@ impl Game {
         watcher_kind: ValueKind,
         tunnel_finder: F,
     ) -> super::SyncMessage {
-        match self.state {
+        match &self.state {
             State::WaitingScreen => match &self.team_manager {
                 Some(team_manager)
                     if !team_manager.is_random_assignments()
@@ -806,29 +842,27 @@ impl Game {
             },
             State::Leaderboard(index) => match watcher_kind {
                 ValueKind::Host | ValueKind::Unassigned => SyncMessage::Leaderboard {
-                    index,
+                    index: *index,
                     count: self.fuiz_config.len(),
                     leaderboard: self.leaderboard_message(),
                 }
                 .into(),
                 ValueKind::Player => SyncMessage::Score {
-                    index,
+                    index: *index,
                     count: self.fuiz_config.len(),
                     score: self.score(watcher_id),
                 }
                 .into(),
             },
-            State::Slide(index) => self
-                .fuiz_config
-                .state_message(
-                    watcher_id,
-                    watcher_kind,
-                    self.team_manager.as_ref(),
-                    &self.watchers,
-                    tunnel_finder,
-                    index,
-                )
-                .expect("Index was violated"),
+            State::Slide(CurrentSlide { index, state }) => state.state_message(
+                watcher_id,
+                watcher_kind,
+                self.team_manager.as_ref(),
+                &self.watchers,
+                tunnel_finder,
+                *index,
+                self.fuiz_config.len(),
+            ),
             State::Done => match watcher_kind {
                 ValueKind::Host => SyncMessage::Summary({
                     let (player_count, stats) =

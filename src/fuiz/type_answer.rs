@@ -73,11 +73,10 @@ fn validate_introduce_question(val: &Duration) -> ValidationResult {
     validate_duration::<MIN_INTRODUCE_QUESTION, MAX_INTRODUCE_QUESTION>("introduce_question", val)
 }
 
-/// Presenting a multiple choice question that presents a question then the answers with optional accompanying media
 #[serde_with::serde_as]
 #[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, serde::Deserialize, Validate)]
-pub struct Slide {
+#[derive(Debug, Clone, Serialize, serde::Deserialize, Validate)]
+pub struct SlideConfig {
     /// The question title, represents what's being asked
     #[garde(length(chars, min = MIN_TITLE_LENGTH, max = MAX_TITLE_LENGTH))]
     title: String,
@@ -103,20 +102,34 @@ pub struct Slide {
     #[garde(skip)]
     #[serde(default)]
     case_sensitive: bool,
+}
+
+/// Presenting a multiple choice question that presents a question then the answers with optional accompanying media
+#[serde_with::serde_as]
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct State {
+    /// The question title, represents what's being asked
+    config: SlideConfig,
 
     // State
     /// Storage of user answers combined with the time of answering
-    #[serde(default)]
-    #[garde(skip)]
     user_answers: HashMap<Id, (String, SystemTime)>,
     /// Instant where answers were first displayed
-    #[serde(default)]
-    #[garde(skip)]
     answer_start: Option<SystemTime>,
     /// Stage of the slide
-    #[serde(default)]
-    #[garde(skip)]
     state: SlideState,
+}
+
+impl SlideConfig {
+    pub fn to_state(&self) -> State {
+        State {
+            config: self.clone(),
+            user_answers: Default::default(),
+            answer_start: Default::default(),
+            state: Default::default(),
+        }
+    }
 }
 
 /// Messages sent to the listeners to update their pre-existing state with the slide state
@@ -196,7 +209,7 @@ fn clean_answer(answer: &str, case_sensitive: bool) -> String {
     }
 }
 
-impl Slide {
+impl State {
     pub fn play<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
@@ -243,7 +256,7 @@ impl Slide {
         count: usize,
     ) {
         if self.change_state(SlideState::Unstarted, SlideState::Question) {
-            if self.introduce_question.is_zero() {
+            if self.config.introduce_question.is_zero() {
                 self.send_accepting_answers(
                     watchers,
                     schedule_message,
@@ -260,9 +273,9 @@ impl Slide {
                 &UpdateMessage::QuestionAnnouncement {
                     index,
                     count,
-                    question: self.title.clone(),
-                    media: self.media.clone(),
-                    duration: self.introduce_question,
+                    question: self.config.title.clone(),
+                    media: self.config.media.clone(),
+                    duration: self.config.introduce_question,
                     accept_answers: false,
                 }
                 .into(),
@@ -275,7 +288,7 @@ impl Slide {
                     to: SlideState::Answers,
                 }
                 .into(),
-                self.introduce_question,
+                self.config.introduce_question,
             )
         }
     }
@@ -299,9 +312,9 @@ impl Slide {
                 &UpdateMessage::QuestionAnnouncement {
                     index,
                     count,
-                    question: self.title.clone(),
-                    media: self.media.clone(),
-                    duration: self.time_limit,
+                    question: self.config.title.clone(),
+                    media: self.config.media.clone(),
+                    duration: self.config.time_limit,
                     accept_answers: true,
                 }
                 .into(),
@@ -314,7 +327,7 @@ impl Slide {
                     to: SlideState::AnswersResults,
                 }
                 .into(),
-                self.time_limit,
+                self.config.time_limit,
             )
         }
     }
@@ -342,19 +355,20 @@ impl Slide {
             watchers.announce(
                 &UpdateMessage::AnswersResults {
                     answers: self
+                        .config
                         .answers
                         .iter()
-                        .map(|answer| clean_answer(answer, self.case_sensitive))
+                        .map(|answer| clean_answer(answer, self.config.case_sensitive))
                         .collect_vec(),
                     results: self
                         .user_answers
                         .iter()
-                        .map(|(_, (answer, _))| clean_answer(answer, self.case_sensitive))
+                        .map(|(_, (answer, _))| clean_answer(answer, self.config.case_sensitive))
                         .counts()
                         .into_iter()
                         .map(|(i, c)| (i.to_owned(), c))
                         .collect_vec(),
-                    case_sensitive: self.case_sensitive,
+                    case_sensitive: self.config.case_sensitive,
                 }
                 .into(),
                 tunnel_finder,
@@ -372,9 +386,10 @@ impl Slide {
         let starting_instant = self.timer();
 
         let cleaned_answers: HashSet<_> = self
+            .config
             .answers
             .iter()
-            .map(|answer| clean_answer(answer, self.case_sensitive))
+            .map(|answer| clean_answer(answer, self.config.case_sensitive))
             .collect();
 
         leaderboard.add_scores(
@@ -383,16 +398,16 @@ impl Slide {
                 .iter()
                 .map(|(id, (answer, instant))| {
                     let correct =
-                        cleaned_answers.contains(&clean_answer(answer, self.case_sensitive));
+                        cleaned_answers.contains(&clean_answer(answer, self.config.case_sensitive));
                     (
                         *id,
                         if correct {
-                            Slide::calculate_score(
-                                self.time_limit,
+                            State::calculate_score(
+                                self.config.time_limit,
                                 instant
                                     .duration_since(starting_instant)
                                     .expect("future is past the past"),
-                                self.points_awarded,
+                                self.config.points_awarded,
                             )
                         } else {
                             0
@@ -442,40 +457,41 @@ impl Slide {
             SlideState::Unstarted | SlideState::Question => SyncMessage::QuestionAnnouncement {
                 index,
                 count,
-                question: self.title.clone(),
-                media: self.media.clone(),
-                duration: self.introduce_question
+                question: self.config.title.clone(),
+                media: self.config.media.clone(),
+                duration: self.config.introduce_question
                     - self.timer().elapsed().expect("system clock went backwards"),
                 accept_answers: false,
             },
             SlideState::Answers => SyncMessage::QuestionAnnouncement {
                 index,
                 count,
-                question: self.title.clone(),
-                media: self.media.clone(),
-                duration: self.time_limit
+                question: self.config.title.clone(),
+                media: self.config.media.clone(),
+                duration: self.config.time_limit
                     - self.timer().elapsed().expect("system clock went backwards"),
                 accept_answers: true,
             },
             SlideState::AnswersResults => SyncMessage::AnswersResults {
                 index,
                 count,
-                question: self.title.clone(),
-                media: self.media.clone(),
+                question: self.config.title.clone(),
+                media: self.config.media.clone(),
                 answers: self
+                    .config
                     .answers
                     .iter()
-                    .map(|answer| clean_answer(answer, self.case_sensitive))
+                    .map(|answer| clean_answer(answer, self.config.case_sensitive))
                     .collect_vec(),
                 results: self
                     .user_answers
                     .iter()
-                    .map(|(_, (answer, _))| clean_answer(answer, self.case_sensitive))
+                    .map(|(_, (answer, _))| clean_answer(answer, self.config.case_sensitive))
                     .counts()
                     .into_iter()
                     .map(|(i, c)| (i.to_owned(), c))
                     .collect_vec(),
-                case_sensitive: self.case_sensitive,
+                case_sensitive: self.config.case_sensitive,
             },
         }
     }

@@ -31,15 +31,39 @@ pub enum TextOrMedia {
 pub struct Fuiz {
     #[garde(length(max = MAX_TITLE_LENGTH))]
     title: String,
+
     #[garde(length(max = MAX_SLIDES_COUNT), dive)]
-    slides: Vec<Slide>,
+    pub slides: Vec<SlideConfig>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CurrentSlide {
+    pub index: usize,
+    pub state: SlideState,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Validate)]
-pub enum Slide {
-    MultipleChoice(#[garde(dive)] multiple_choice::Slide),
-    TypeAnswer(#[garde(dive)] type_answer::Slide),
-    Order(#[garde(dive)] order::Slide),
+pub enum SlideConfig {
+    MultipleChoice(#[garde(dive)] multiple_choice::SlideConfig),
+    TypeAnswer(#[garde(dive)] type_answer::SlideConfig),
+    Order(#[garde(dive)] order::SlideConfig),
+}
+
+impl SlideConfig {
+    pub fn to_state(&self) -> SlideState {
+        match self {
+            Self::MultipleChoice(s) => SlideState::MultipleChoice(s.to_state()),
+            Self::TypeAnswer(s) => SlideState::TypeAnswer(s.to_state()),
+            Self::Order(s) => SlideState::Order(s.to_state()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum SlideState {
+    MultipleChoice(multiple_choice::State),
+    TypeAnswer(type_answer::State),
+    Order(order::State),
 }
 
 impl Fuiz {
@@ -50,122 +74,9 @@ impl Fuiz {
     pub fn is_empty(&self) -> bool {
         self.slides.is_empty()
     }
-
-    pub fn play_slide<
-        T: Tunnel,
-        F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration),
-    >(
-        &mut self,
-        team_manager: Option<&TeamManager>,
-        watchers: &Watchers,
-        schedule_message: S,
-        tunnel_finder: F,
-        index: usize,
-    ) {
-        let count = self.len();
-        if let Some(slide) = self.slides.get_mut(index) {
-            slide.play(
-                team_manager,
-                watchers,
-                schedule_message,
-                tunnel_finder,
-                index,
-                count,
-            );
-        }
-    }
-
-    pub fn receive_message<
-        T: Tunnel,
-        F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration),
-    >(
-        &mut self,
-        leaderboard: &mut Leaderboard,
-        watchers: &Watchers,
-        team_manager: Option<&TeamManager>,
-        schedule_message: S,
-        tunnel_finder: F,
-        watcher_id: Id,
-        message: IncomingMessage,
-        index: usize,
-    ) -> bool {
-        let count = self.len();
-
-        if let Some(slide) = self.slides.get_mut(index) {
-            slide.receive_message(
-                leaderboard,
-                watchers,
-                team_manager,
-                schedule_message,
-                watcher_id,
-                tunnel_finder,
-                message,
-                index,
-                count,
-            )
-        } else {
-            false
-        }
-    }
-
-    pub fn state_message<T: Tunnel, F: Fn(Id) -> Option<T>>(
-        &self,
-        watcher_id: Id,
-        watcher_kind: ValueKind,
-        team_manager: Option<&TeamManager>,
-        watchers: &Watchers,
-        tunnel_finder: F,
-        index: usize,
-    ) -> Option<SyncMessage> {
-        self.slides.get(index).map(|slide| {
-            slide.state_message(
-                watcher_id,
-                watcher_kind,
-                team_manager,
-                watchers,
-                tunnel_finder,
-                index,
-                self.slides.len(),
-            )
-        })
-    }
-
-    pub fn receive_alarm<
-        T: Tunnel,
-        F: Fn(Id) -> Option<T>,
-        S: FnMut(AlarmMessage, web_time::Duration),
-    >(
-        &mut self,
-        leaderboard: &mut Leaderboard,
-        watchers: &Watchers,
-        team_manager: Option<&TeamManager>,
-        schedule_message: &mut S,
-        tunnel_finder: F,
-        message: AlarmMessage,
-        index: usize,
-    ) -> bool {
-        let len = self.len();
-
-        if let Some(slide) = self.slides.get_mut(index) {
-            slide.receive_alarm(
-                leaderboard,
-                watchers,
-                team_manager,
-                schedule_message,
-                tunnel_finder,
-                message,
-                index,
-                len,
-            )
-        } else {
-            false
-        }
-    }
 }
 
-impl Slide {
+impl SlideState {
     pub fn play<T: Tunnel, F: Fn(Id) -> Option<T>, S: FnMut(AlarmMessage, web_time::Duration)>(
         &mut self,
         team_manager: Option<&TeamManager>,
@@ -289,7 +200,7 @@ impl Slide {
         }
     }
 
-    fn receive_alarm<
+    pub fn receive_alarm<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
         S: FnMut(AlarmMessage, web_time::Duration),

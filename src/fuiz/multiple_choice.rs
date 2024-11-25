@@ -73,11 +73,10 @@ fn validate_time_limit(val: &Duration) -> ValidationResult {
     validate_duration::<MIN_TIME_LIMIT, MAX_TIME_LIMIT>("time_limit", val)
 }
 
-/// Presenting a multiple choice question that presents a question then the answers with optional accompanying media
 #[serde_with::serde_as]
 #[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, serde::Deserialize, Validate)]
-pub struct Slide {
+#[derive(Debug, Clone, Serialize, serde::Deserialize, Validate)]
+pub struct SlideConfig {
     /// The question title, represents what's being asked
     #[garde(length(min = MIN_TITLE_LENGTH, max = MAX_TITLE_LENGTH))]
     title: String,
@@ -98,20 +97,34 @@ pub struct Slide {
     /// Accompanying answers
     #[garde(length(max = MAX_ANSWER_COUNT))]
     answers: Vec<AnswerChoice>,
+}
+
+/// Presenting a multiple choice question that presents a question then the answers with optional accompanying media
+#[serde_with::serde_as]
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct State {
+    /// The question title, represents what's being asked
+    config: SlideConfig,
 
     // State
     /// Storage of user answers combined with the time of answering
-    #[serde(default)]
-    #[garde(skip)]
     user_answers: HashMap<Id, (usize, SystemTime)>,
     /// Instant where answers were first displayed
-    #[serde(default)]
-    #[garde(skip)]
     answer_start: Option<SystemTime>,
     /// Stage of the slide
-    #[serde(default)]
-    #[garde(skip)]
     state: SlideState,
+}
+
+impl SlideConfig {
+    pub fn to_state(&self) -> State {
+        State {
+            config: self.clone(),
+            user_answers: HashMap::new(),
+            answer_start: None,
+            state: SlideState::Unstarted,
+        }
+    }
 }
 
 /// Utility option with contextual meaning of visibility to the player or the host
@@ -220,7 +233,7 @@ pub struct AnswerChoiceResult {
     count: usize,
 }
 
-impl Slide {
+impl State {
     pub fn play<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
@@ -280,15 +293,15 @@ impl Slide {
                 &UpdateMessage::QuestionAnnouncement {
                     index,
                     count,
-                    question: self.title.clone(),
-                    media: self.media.clone(),
-                    duration: self.introduce_question,
+                    question: self.config.title.clone(),
+                    media: self.config.media.clone(),
+                    duration: self.config.introduce_question,
                 }
                 .into(),
                 &tunnel_finder,
             );
 
-            if self.introduce_question.is_zero() {
+            if self.config.introduce_question.is_zero() {
                 self.send_answers_announcements(
                     team_manager,
                     watchers,
@@ -303,7 +316,7 @@ impl Slide {
                         to: SlideState::Answers,
                     }
                     .into(),
-                    self.introduce_question,
+                    self.config.introduce_question,
                 )
             }
         }
@@ -328,7 +341,7 @@ impl Slide {
                 |id, kind| {
                     Some(
                         UpdateMessage::AnswersAnnouncement {
-                            duration: self.time_limit,
+                            duration: self.config.time_limit,
                             answers: self.get_answers_for_player(
                                 id,
                                 kind,
@@ -371,7 +384,7 @@ impl Slide {
                     to: SlideState::AnswersResults,
                 }
                 .into(),
-                self.time_limit,
+                self.config.time_limit,
             )
         }
     }
@@ -403,8 +416,14 @@ impl Slide {
                 .counts();
             watchers.announce(
                 &UpdateMessage::AnswersResults {
-                    answers: self.answers.iter().map(|a| a.content.clone()).collect_vec(),
+                    answers: self
+                        .config
+                        .answers
+                        .iter()
+                        .map(|a| a.content.clone())
+                        .collect_vec(),
                     results: self
+                        .config
                         .answers
                         .iter()
                         .enumerate()
@@ -434,16 +453,16 @@ impl Slide {
                 .user_answers
                 .iter()
                 .map(|(id, (answer, instant))| {
-                    let correct = self.answers.get(*answer).is_some_and(|x| x.correct);
+                    let correct = self.config.answers.get(*answer).is_some_and(|x| x.correct);
                     (
                         *id,
                         if correct {
-                            Slide::calculate_score(
-                                self.time_limit,
+                            State::calculate_score(
+                                self.config.time_limit,
                                 instant
                                     .duration_since(starting_instant)
                                     .expect("future is past the past"),
-                                self.points_awarded,
+                                self.config.points_awarded,
                             )
                         } else {
                             0
@@ -491,21 +510,23 @@ impl Slide {
             ValueKind::Host | ValueKind::Unassigned => {
                 if is_team {
                     std::iter::repeat(PossiblyHidden::Hidden)
-                        .take(self.answers.len())
+                        .take(self.config.answers.len())
                         .collect_vec()
                 } else {
-                    self.answers
+                    self.config
+                        .answers
                         .iter()
                         .map(|answer_choice| PossiblyHidden::Visible(answer_choice.content.clone()))
                         .collect_vec()
                 }
             }
-            ValueKind::Player => match self.answers.len() {
+            ValueKind::Player => match self.config.answers.len() {
                 0 => Vec::new(),
                 answer_count => {
                     let adjusted_team_index = team_index % answer_count;
 
-                    self.answers
+                    self.config
+                        .answers
                         .iter()
                         .enumerate()
                         .map(|(answer_index, answer_choice)| {
@@ -535,18 +556,19 @@ impl Slide {
             SlideState::Unstarted | SlideState::Question => SyncMessage::QuestionAnnouncement {
                 index,
                 count,
-                question: self.title.clone(),
-                media: self.media.clone(),
-                duration: self.introduce_question
+                question: self.config.title.clone(),
+                media: self.config.media.clone(),
+                duration: self.config.introduce_question
                     - self.timer().elapsed().expect("system clock went backwards"),
             },
             SlideState::Answers => SyncMessage::AnswersAnnouncement {
                 index,
                 count,
-                question: self.title.clone(),
-                media: self.media.clone(),
+                question: self.config.title.clone(),
+                media: self.config.media.clone(),
                 duration: {
-                    self.time_limit - self.timer().elapsed().expect("system clock went backwards")
+                    self.config.time_limit
+                        - self.timer().elapsed().expect("system clock went backwards")
                 },
                 answers: self.get_answers_for_player(
                     watcher_id,
@@ -595,10 +617,16 @@ impl Slide {
                 SyncMessage::AnswersResults {
                     index,
                     count,
-                    question: self.title.clone(),
-                    media: self.media.clone(),
-                    answers: self.answers.iter().map(|a| a.content.clone()).collect_vec(),
+                    question: self.config.title.clone(),
+                    media: self.config.media.clone(),
+                    answers: self
+                        .config
+                        .answers
+                        .iter()
+                        .map(|a| a.content.clone())
+                        .collect_vec(),
                     results: self
+                        .config
                         .answers
                         .iter()
                         .enumerate()
@@ -656,7 +684,7 @@ impl Slide {
                 }
             },
             IncomingMessage::Player(IncomingPlayerMessage::IndexAnswer(v))
-                if v < self.answers.len() =>
+                if v < self.config.answers.len() =>
             {
                 self.user_answers.insert(watcher_id, (v, SystemTime::now()));
                 let left_set: HashSet<_> = watchers

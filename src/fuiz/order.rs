@@ -84,11 +84,10 @@ pub struct AxisLabels {
     to: Option<String>,
 }
 
-/// Presenting a multiple choice question that presents a question then the answers with optional accompanying media
 #[serde_with::serde_as]
 #[skip_serializing_none]
-#[derive(Debug, Clone, Default, Serialize, serde::Deserialize, Validate)]
-pub struct Slide {
+#[derive(Debug, Clone, Serialize, serde::Deserialize, Validate)]
+pub struct SlideConfig {
     /// The question title, represents what's being asked
     #[garde(length(chars, min = MIN_TITLE_LENGTH, max = MAX_TITLE_LENGTH))]
     title: String,
@@ -114,24 +113,36 @@ pub struct Slide {
     /// From and to labels for the order
     #[garde(dive)]
     axis_labels: AxisLabels,
+}
+
+/// Presenting a multiple choice question that presents a question then the answers with optional accompanying media
+#[serde_with::serde_as]
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct State {
+    config: SlideConfig,
 
     // State
     /// Shuffled answers
-    #[serde(default)]
-    #[garde(skip)]
     shuffled_answers: Vec<String>,
     /// Storage of user answers combined with the time of answering
-    #[serde(default)]
-    #[garde(skip)]
     user_answers: HashMap<Id, (Vec<String>, SystemTime)>,
     /// Instant where answers were first displayed
-    #[serde(default)]
-    #[garde(skip)]
     answer_start: Option<SystemTime>,
     /// Stage of the slide
-    #[serde(default)]
-    #[garde(skip)]
     state: SlideState,
+}
+
+impl SlideConfig {
+    pub fn to_state(&self) -> State {
+        State {
+            config: self.clone(),
+            shuffled_answers: Vec::new(),
+            user_answers: HashMap::new(),
+            answer_start: None,
+            state: SlideState::Unstarted,
+        }
+    }
 }
 
 /// Messages sent to the listeners to update their pre-existing state with the slide state
@@ -220,7 +231,7 @@ pub enum SyncMessage {
     },
 }
 
-impl Slide {
+impl State {
     pub fn play<
         T: Tunnel,
         F: Fn(Id) -> Option<T>,
@@ -271,15 +282,15 @@ impl Slide {
                 &UpdateMessage::QuestionAnnouncement {
                     index,
                     count,
-                    question: self.title.clone(),
-                    media: self.media.clone(),
-                    duration: self.introduce_question,
+                    question: self.config.title.clone(),
+                    media: self.config.media.clone(),
+                    duration: self.config.introduce_question,
                 }
                 .into(),
                 &tunnel_finder,
             );
 
-            if self.introduce_question.is_zero() {
+            if self.config.introduce_question.is_zero() {
                 self.send_answers_announcements(
                     watchers,
                     tunnel_finder,
@@ -294,7 +305,7 @@ impl Slide {
                         to: SlideState::Answers,
                     }
                     .into(),
-                    self.introduce_question,
+                    self.config.introduce_question,
                 );
             }
         }
@@ -313,16 +324,16 @@ impl Slide {
         _count: usize,
     ) {
         if self.change_state(SlideState::Question, SlideState::Answers) {
-            self.shuffled_answers.clone_from(&self.answers);
+            self.shuffled_answers.clone_from(&self.config.answers);
             fastrand::shuffle(&mut self.shuffled_answers);
 
             self.start_timer();
 
             watchers.announce(
                 &UpdateMessage::AnswersAnnouncement {
-                    axis_labels: self.axis_labels.clone(),
+                    axis_labels: self.config.axis_labels.clone(),
                     answers: self.shuffled_answers.clone(),
-                    duration: self.time_limit,
+                    duration: self.config.time_limit,
                 }
                 .into(),
                 tunnel_finder,
@@ -334,7 +345,7 @@ impl Slide {
                     to: SlideState::AnswersResults,
                 }
                 .into(),
-                self.time_limit,
+                self.config.time_limit,
             );
         }
     }
@@ -362,12 +373,12 @@ impl Slide {
             let correct_count = self
                 .user_answers
                 .iter()
-                .filter(|(_, (answers, _))| answers == &self.answers)
+                .filter(|(_, (answers, _))| answers == &self.config.answers)
                 .count();
 
             watchers.announce(
                 &UpdateMessage::AnswersResults {
-                    answers: self.answers.iter().cloned().collect_vec(),
+                    answers: self.config.answers.iter().cloned().collect_vec(),
                     results: (correct_count, self.user_answers.len() - correct_count),
                 }
                 .into(),
@@ -390,16 +401,16 @@ impl Slide {
                 .user_answers
                 .iter()
                 .map(|(id, (answers, instant))| {
-                    let correct = answers == &self.answers;
+                    let correct = answers == &self.config.answers;
                     (
                         *id,
                         if correct {
-                            Slide::calculate_score(
-                                self.time_limit,
+                            State::calculate_score(
+                                self.config.time_limit,
                                 instant
                                     .duration_since(starting_instant)
                                     .expect("future is past the past"),
-                                self.points_awarded,
+                                self.config.points_awarded,
                             )
                         } else {
                             0
@@ -449,33 +460,33 @@ impl Slide {
             SlideState::Unstarted | SlideState::Question => SyncMessage::QuestionAnnouncement {
                 index,
                 count,
-                question: self.title.clone(),
-                media: self.media.clone(),
-                duration: self.introduce_question
+                question: self.config.title.clone(),
+                media: self.config.media.clone(),
+                duration: self.config.introduce_question
                     - self.timer().elapsed().expect("system clock went backwards"),
             },
             SlideState::Answers => SyncMessage::AnswersAnnouncement {
                 index,
                 count,
-                question: self.title.clone(),
-                axis_labels: self.axis_labels.clone(),
-                media: self.media.clone(),
+                question: self.config.title.clone(),
+                axis_labels: self.config.axis_labels.clone(),
+                media: self.config.media.clone(),
                 answers: self.shuffled_answers.clone(),
-                duration: self.time_limit
+                duration: self.config.time_limit
                     - self.timer().elapsed().expect("system clock went backwards"),
             },
             SlideState::AnswersResults => SyncMessage::AnswersResults {
                 index,
                 count,
-                question: self.title.clone(),
-                axis_labels: self.axis_labels.clone(),
-                media: self.media.clone(),
-                answers: self.answers.clone(),
+                question: self.config.title.clone(),
+                axis_labels: self.config.axis_labels.clone(),
+                media: self.config.media.clone(),
+                answers: self.config.answers.clone(),
                 results: {
                     let correct_count = self
                         .user_answers
                         .iter()
-                        .filter(|(_, (answers, _))| answers == &self.answers)
+                        .filter(|(_, (answers, _))| answers == &self.config.answers)
                         .count();
                     (correct_count, self.user_answers.len() - correct_count)
                 },
