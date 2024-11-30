@@ -84,10 +84,32 @@ impl PlayerValue {
     }
 }
 
+#[derive(Deserialize)]
+struct WatchersSerde {
+    mapping: HashMap<Id, Value>,
+}
+
 #[derive(Default, Serialize, Deserialize)]
+#[serde(from = "WatchersSerde")]
 pub struct Watchers {
     mapping: HashMap<Id, Value>,
+
+    #[serde(skip_serializing)]
     reverse_mapping: EnumMap<ValueKind, HashSet<Id>>,
+}
+
+impl From<WatchersSerde> for Watchers {
+    fn from(serde: WatchersSerde) -> Self {
+        let WatchersSerde { mapping } = serde;
+        let mut reverse_mapping: EnumMap<ValueKind, HashSet<Id>> = EnumMap::default();
+        for (id, value) in mapping.iter() {
+            reverse_mapping[value.kind()].insert(*id);
+        }
+        Self {
+            mapping,
+            reverse_mapping,
+        }
+    }
 }
 
 const MAX_PLAYERS: usize = crate::CONFIG.fuiz.max_player_count.unsigned_abs() as usize;

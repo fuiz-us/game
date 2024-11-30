@@ -4,24 +4,69 @@ use std::collections::HashMap;
 
 use super::{watcher::Id, TruncatedVec};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SlideSummary {
-    scores_descending: Vec<(Id, u64)>,
-    mapping: HashMap<Id, (u64, usize)>,
-    points_earned: Vec<(Id, u64)>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct FinalSummary {
+    // for each slide, how many people earned points and how many didn't
     stats: Vec<(usize, usize)>,
+    // for each player, the points they earned on each slide
     mapping: HashMap<Id, Vec<u64>>,
 }
 
+#[derive(Deserialize)]
+struct LeaderboardSerde {
+    points_earned: Vec<Vec<(Id, u64)>>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(from = "LeaderboardSerde")]
 pub struct Leaderboard {
-    slide_summaries: Vec<SlideSummary>,
-    current_slide: usize,
+    points_earned: Vec<Vec<(Id, u64)>>,
+
+    #[serde(skip)]
+    previous_scores_descending: Vec<(Id, u64)>,
+    #[serde(skip)]
+    scores_descending: Vec<(Id, u64)>,
+    #[serde(skip)]
+    score_and_position: HashMap<Id, (u64, usize)>,
+    #[serde(skip)]
     final_summary: once_cell_serde::sync::OnceCell<FinalSummary>,
+}
+
+impl From<LeaderboardSerde> for Leaderboard {
+    fn from(serde: LeaderboardSerde) -> Self {
+        let scores_descending = serde
+            .points_earned
+            .iter()
+            .flat_map(|points_earned| points_earned.iter().copied())
+            .sorted_by_key(|(_, points)| *points)
+            .rev()
+            .collect_vec();
+
+        let previous_scores_descending = serde
+            .points_earned
+            .iter()
+            .rev()
+            .skip(1)
+            .rev()
+            .flat_map(|points_earned| points_earned.iter().copied())
+            .sorted_by_key(|(_, points)| *points)
+            .rev()
+            .collect_vec();
+
+        let score_and_position = scores_descending
+            .iter()
+            .enumerate()
+            .map(|(i, (id, p))| (*id, (*p, i)))
+            .collect();
+
+        Leaderboard {
+            points_earned: serde.points_earned,
+            previous_scores_descending,
+            scores_descending,
+            score_and_position,
+            final_summary: once_cell_serde::sync::OnceCell::new(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Clone, Copy)]
@@ -31,21 +76,12 @@ pub struct ScoreMessage {
 }
 
 impl Leaderboard {
-    fn slide(&self) -> usize {
-        self.current_slide
-    }
-
     pub fn add_scores(&mut self, scores: &[(Id, u64)]) {
         let mut summary: HashMap<Id, u64> = self
-            .slide_summaries
-            .get(self.slide())
-            .map(|s| {
-                s.mapping
-                    .iter()
-                    .map(|(id, (points, _))| (*id, *points))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .score_and_position
+            .iter()
+            .map(|(id, (points, _))| (*id, *points))
+            .collect();
 
         for (id, points) in scores {
             *summary.entry(*id).or_default() += points;
@@ -64,32 +100,29 @@ impl Leaderboard {
             .map(|(position, (id, points))| (*id, (*points, position)))
             .collect();
 
-        self.slide_summaries.push(SlideSummary {
-            scores_descending,
-            mapping,
-            points_earned: scores.to_vec(),
-        });
+        self.points_earned.push(scores.to_vec());
 
-        self.current_slide = self.slide_summaries.len() - 1;
+        self.previous_scores_descending =
+            std::mem::replace(&mut self.scores_descending, scores_descending);
+
+        self.score_and_position = mapping;
     }
 
-    pub fn scores_descending<const T: usize>(&self) -> [TruncatedVec<(Id, u64)>; T] {
+    pub fn last_two_scores_descending(&self) -> [TruncatedVec<(Id, u64)>; 2] {
         const LIMIT: usize = 50;
 
-        let slide = self.slide();
-
-        std::array::from_fn(|i| {
-            let current_slide = slide.checked_sub(i);
-
-            match current_slide.and_then(|cs| self.slide_summaries.get(cs)) {
-                None => TruncatedVec::default(),
-                Some(s) => TruncatedVec::new(
-                    s.scores_descending.iter().copied(),
-                    LIMIT,
-                    s.scores_descending.len(),
-                ),
-            }
-        })
+        [
+            TruncatedVec::new(
+                self.scores_descending.iter().copied(),
+                LIMIT,
+                self.scores_descending.len(),
+            ),
+            TruncatedVec::new(
+                self.previous_scores_descending.iter().copied(),
+                LIMIT,
+                self.previous_scores_descending.len(),
+            ),
+        ]
     }
 
     fn compute_final_summary(&self, show_real_score: bool) -> FinalSummary {
@@ -101,62 +134,41 @@ impl Leaderboard {
             }
         };
 
-        let summaries = self
-            .slide_summaries
-            .iter()
-            .map(|s| {
-                s.points_earned
-                    .clone()
-                    .into_iter()
-                    .map(|(i, s)| (i, map_score(s)))
-                    .collect_vec()
-            })
-            .collect_vec();
-
-        let summary_mapping: Vec<HashMap<_, _>> = summaries
-            .iter()
-            .map(|s| {
-                s.iter()
-                    .map(|(id, points)| (*id, map_score(*points)))
-                    .collect()
-            })
-            .collect_vec();
-
-        let scores_descending = self.slide_summaries.get(self.slide()).map_or(vec![], |s| {
-            s.scores_descending
-                .clone()
-                .into_iter()
-                .map(|(i, s)| (i, map_score(s)))
-                .collect_vec()
-        });
-
-        let id_to_points = |id| {
-            summary_mapping
-                .iter()
-                .map(|h| map_score(*h.get(&id).unwrap_or(&0)))
-                .collect_vec()
-        };
-
         FinalSummary {
             stats: self
-                .slide_summaries
+                .points_earned
                 .iter()
-                .map(|s| {
-                    s.points_earned
+                .map(|points_earned| {
+                    let earned_count = points_earned
                         .iter()
-                        .fold((0, 0), |(correct, wrong), (_, earned)| {
-                            if *earned > 0 {
-                                (correct + 1, wrong)
-                            } else {
-                                (correct, wrong + 1)
-                            }
-                        })
+                        .filter(|(_, earned)| *earned > 0)
+                        .count();
+
+                    (earned_count, points_earned.len() - earned_count)
                 })
-                .collect_vec(),
-            mapping: scores_descending
-                .into_iter()
-                .map(|(id, _)| (id, id_to_points(id)))
                 .collect(),
+            mapping: self
+                .points_earned
+                .iter()
+                .map(|points_earned| {
+                    points_earned
+                        .iter()
+                        .map(|(id, points)| (*id, map_score(*points)))
+                        .collect::<HashMap<_, _>>()
+                })
+                .enumerate()
+                .fold(
+                    HashMap::new(),
+                    |mut aggregate_score_mapping, (slide_index, slide_score_mapping)| {
+                        for (id, points) in slide_score_mapping {
+                            aggregate_score_mapping.entry(id).or_default().push(points);
+                        }
+                        for (_, v) in aggregate_score_mapping.iter_mut() {
+                            v.resize(slide_index + 1, 0);
+                        }
+                        aggregate_score_mapping
+                    },
+                ),
         }
     }
 
@@ -172,19 +184,17 @@ impl Leaderboard {
     }
 
     pub fn player_summary(&self, id: Id, show_real_score: bool) -> Vec<u64> {
-        self.final_summary(show_real_score).mapping.get(&id).map_or(
-            vec![0; self.slide_summaries.len()],
-            std::clone::Clone::clone,
-        )
+        self.final_summary(show_real_score)
+            .mapping
+            .get(&id)
+            .map_or(vec![0; self.points_earned.len()], std::clone::Clone::clone)
     }
 
     pub fn score(&self, watcher_id: Id) -> Option<ScoreMessage> {
-        let summary = self.slide_summaries.get(self.slide());
-        summary.and_then(|s| {
-            s.mapping
-                .get(&watcher_id)
-                .copied()
-                .map(|(points, position)| ScoreMessage { points, position })
+        let (points, position) = self.score_and_position.get(&watcher_id)?;
+        Some(ScoreMessage {
+            points: *points,
+            position: *position + 1,
         })
     }
 }

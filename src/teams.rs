@@ -15,11 +15,15 @@ use super::{
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TeamManager {
     player_to_team: HashMap<Id, Id>,
-    team_to_players: HashMap<Id, Vec<Id>>,
     pub optimal_size: usize,
+    assign_random: bool,
+
     preferences: Option<HashMap<Id, Vec<Id>>>,
+
     teams: OnceCell<Vec<(Id, String)>>,
     next_team_to_receive_player: usize,
+
+    team_to_players: HashMap<Id, Vec<Id>>,
 }
 
 impl TeamManager {
@@ -27,6 +31,7 @@ impl TeamManager {
         Self {
             player_to_team: HashMap::default(),
             team_to_players: HashMap::default(),
+            assign_random,
             optimal_size,
             preferences: if assign_random {
                 None
@@ -39,7 +44,7 @@ impl TeamManager {
     }
 
     pub fn is_random_assignments(&self) -> bool {
-        self.preferences.is_none()
+        self.assign_random
     }
 
     pub fn finalize<T: Tunnel, F: Fn(Id) -> Option<T>>(

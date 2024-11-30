@@ -6,11 +6,37 @@ use thiserror::Error;
 
 use super::watcher::Id;
 
+#[derive(Deserialize)]
+struct NamesSerde {
+    mapping: HashMap<Id, String>,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(from = "NamesSerde")]
 pub struct Names {
     mapping: HashMap<Id, String>,
+
+    #[serde(skip_serializing)]
     reverse_mapping: HashMap<String, Id>,
+    #[serde(skip_serializing)]
     existing: HashSet<String>,
+}
+
+impl From<NamesSerde> for Names {
+    fn from(serde: NamesSerde) -> Self {
+        let NamesSerde { mapping } = serde;
+        let mut reverse_mapping = HashMap::new();
+        let mut existing = HashSet::new();
+        for (id, name) in mapping.iter() {
+            reverse_mapping.insert(name.to_owned(), *id);
+            existing.insert(name.to_owned());
+        }
+        Self {
+            mapping,
+            reverse_mapping,
+            existing,
+        }
+    }
 }
 
 #[derive(Error, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
