@@ -194,7 +194,7 @@ impl Leaderboard {
         let (points, position) = self.score_and_position.get(&watcher_id)?;
         Some(ScoreMessage {
             points: *points,
-            position: *position + 1,
+            position: *position,
         })
     }
 }
