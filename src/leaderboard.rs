@@ -34,23 +34,49 @@ pub struct Leaderboard {
 
 impl From<LeaderboardSerde> for Leaderboard {
     fn from(serde: LeaderboardSerde) -> Self {
-        let scores_descending = serde
+        let total_score_mapping = serde
             .points_earned
             .iter()
             .flat_map(|points_earned| points_earned.iter().copied())
-            .sorted_by_key(|(_, points)| *points)
-            .rev()
-            .collect_vec();
+            .sorted_by_key(|(id, _)| *id)
+            .coalesce(|(id1, points1), (id2, points2)| {
+                if id1 == id2 {
+                    Ok((id1, points1 + points2))
+                } else {
+                    Err(((id1, points1), (id2, points2)))
+                }
+            })
+            .collect::<HashMap<_, _>>();
 
-        let previous_scores_descending = serde
+        let previous_total_score_mapping = serde
             .points_earned
             .iter()
             .rev()
             .skip(1)
             .rev()
             .flat_map(|points_earned| points_earned.iter().copied())
+            .sorted_by_key(|(id, _)| *id)
+            .coalesce(|(id1, points1), (id2, points2)| {
+                if id1 == id2 {
+                    Ok((id1, points1 + points2))
+                } else {
+                    Err(((id1, points1), (id2, points2)))
+                }
+            })
+            .collect::<HashMap<_, _>>();
+
+        let scores_descending = total_score_mapping
+            .iter()
             .sorted_by_key(|(_, points)| *points)
             .rev()
+            .map(|(id, points)| (*id, *points))
+            .collect_vec();
+
+        let previous_scores_descending = previous_total_score_mapping
+            .iter()
+            .sorted_by_key(|(_, points)| *points)
+            .rev()
+            .map(|(id, points)| (*id, *points))
             .collect_vec();
 
         let score_and_position = scores_descending
