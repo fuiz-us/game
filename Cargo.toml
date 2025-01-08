@@ -24,7 +24,7 @@ serde_with = { version = "3", features = ["chrono"] }
 static-toml = "1.3"
 thiserror = "2.0"
 uuid = { version = "1", features = ["v4", "serde", "js"] }
-garde = { version = "0.21", features = ["derive"] }
+garde = { version = "0.20", features = ["derive"] }
 derive_more = { version = "1", features = ["full"] }
 num-integer = "0.1"
 petname = "2"
@@ -32,3 +32,4 @@ heck = "0.5"
 pluralizer = "0.4"
 web-time = { version = "1.1", features = ["serde"] }
 once_cell_serde = { version = "1.20", features = ["serde"] }
+romanname = "0.1.1"

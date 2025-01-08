@@ -5,6 +5,7 @@ use heck::ToTitleCase;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
+use romanname::{NameConfig, romanname};
 
 use crate::{
     fuiz::{config::CurrentSlide, order, type_answer},
@@ -48,6 +49,11 @@ pub struct Options {
     /// using random names for players (skips choosing names)
     #[garde(skip)]
     random_names: bool,
+    /// random names type (if false -> petnames)
+    #[garde(skip)]
+    is_roman: bool,
+    #[garde(skip)]
+    name_parts: u8,
     /// whether to show answers on players devices or not
     #[garde(skip)]
     show_answers: bool,
@@ -504,14 +510,28 @@ impl Game {
 
         if self.options.random_names {
             loop {
-                let Some(name) = petname::petname(2, " ") else {
-                    continue;
-                };
-                if self
-                    .assign_player_name(watcher, &name.to_title_case(), &tunnel_finder)
-                    .is_ok()
+                if self.options.is_roman 
                 {
-                    break;
+                    let pn = if self.options.name_parts == 2 { false } else { true };
+                    let name = romanname(NameConfig { praenomen: pn });
+                    if self
+                        .assign_player_name(watcher, name.as_str(), &tunnel_finder)
+                        .is_ok()
+                    {
+                        break;
+                    }
+                } 
+                else {
+                    let words = self.options.name_parts;
+                    let Some(name) = petname::petname(words, " ") else {
+                        continue;
+                    };
+                    if self
+                        .assign_player_name(watcher, &name.to_title_case(), &tunnel_finder)
+                        .is_ok()
+                    {
+                        break;
+                    }
                 }
             }
         } else {
