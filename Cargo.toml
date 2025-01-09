@@ -13,7 +13,7 @@ crate-type = ["lib"]
 derive-where = "1"
 enum-map = { version = "2", features = ["serde"] }
 fastrand = "2"
-itertools = "0.13"
+itertools = "0.14"
 kinded = "0.3"
 log = "0.4"
 pretty_env_logger = "0.5"

@@ -3,9 +3,9 @@ use std::{collections::HashSet, fmt::Debug};
 use garde::Validate;
 use heck::ToTitleCase;
 use itertools::Itertools;
+use romanname::{romanname, NameConfig};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-use romanname::{NameConfig, romanname};
 
 use crate::{
     fuiz::{config::CurrentSlide, order, type_answer},
@@ -45,15 +45,16 @@ pub struct TeamOptions {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Validate)]
+pub enum NameStyle {
+    Roman(#[garde(range(min = 2, max = 3))] usize),
+    Petname(#[garde(range(min = 2, max = 3))] usize),
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Validate)]
 pub struct Options {
     /// using random names for players (skips choosing names)
-    #[garde(skip)]
-    random_names: bool,
-    /// random names type (if false -> petnames)
-    #[garde(skip)]
-    is_roman: bool,
-    #[garde(skip)]
-    name_parts: u8,
+    #[garde(dive)]
+    random_names: Option<NameStyle>,
     /// whether to show answers on players devices or not
     #[garde(skip)]
     show_answers: bool,
@@ -508,30 +509,23 @@ impl Game {
             }
         }
 
-        if self.options.random_names {
+        if let Some(name_style) = self.options.random_names {
             loop {
-                if self.options.is_roman 
+                let name = match name_style {
+                    NameStyle::Roman(count) => romanname(NameConfig {
+                        praenomen: count <= 2,
+                    }),
+                    NameStyle::Petname(count) => match petname::petname(count as u8, " ") {
+                        Some(name) => name,
+                        None => continue,
+                    },
+                };
+
+                if self
+                    .assign_player_name(watcher, &name.to_title_case(), &tunnel_finder)
+                    .is_ok()
                 {
-                    let pn = if self.options.name_parts == 2 { false } else { true };
-                    let name = romanname(NameConfig { praenomen: pn });
-                    if self
-                        .assign_player_name(watcher, name.as_str(), &tunnel_finder)
-                        .is_ok()
-                    {
-                        break;
-                    }
-                } 
-                else {
-                    let words = self.options.name_parts;
-                    let Some(name) = petname::petname(words, " ") else {
-                        continue;
-                    };
-                    if self
-                        .assign_player_name(watcher, &name.to_title_case(), &tunnel_finder)
-                        .is_ok()
-                    {
-                        break;
-                    }
+                    break;
                 }
             }
         } else {
@@ -650,7 +644,7 @@ impl Game {
                 self.locked = lock_state;
             }
             IncomingMessage::Unassigned(IncomingUnassignedMessage::NameRequest(s))
-                if !self.options.random_names =>
+                if self.options.random_names.is_none() =>
             {
                 if let Err(e) = self.assign_player_name(watcher_id, &s, &tunnel_finder) {
                     self.watchers.send_message(
