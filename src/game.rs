@@ -513,7 +513,7 @@ impl Game {
             loop {
                 let name = match name_style {
                     NameStyle::Roman(count) => romanname(NameConfig {
-                        praenomen: count <= 2,
+                        praenomen: count > 2,
                     }),
                     NameStyle::Petname(count) => match petname::petname(count as u8, " ") {
                         Some(name) => name,
