@@ -353,7 +353,7 @@ impl Game {
                         |id, kind| {
                             Some(match kind {
                                 ValueKind::Player => UpdateMessage::FindTeam(
-                                    self.watchers.get_name(id).unwrap_or_default(),
+                                    self.watchers.get_team_name(id).unwrap_or_default(),
                                 )
                                 .into(),
                                 _ => UpdateMessage::TeamDisplay(
@@ -812,10 +812,10 @@ impl Game {
                 _ => SyncMessage::WaitingScreen(self.waiting_screen_names(tunnel_finder)).into(),
             },
             State::TeamDisplay => match watcher_kind {
-                ValueKind::Player => {
-                    SyncMessage::FindTeam(self.watchers.get_name(watcher_id).unwrap_or_default())
-                        .into()
-                }
+                ValueKind::Player => SyncMessage::FindTeam(
+                    self.watchers.get_team_name(watcher_id).unwrap_or_default(),
+                )
+                .into(),
                 _ => SyncMessage::TeamDisplay(
                     self.team_manager
                         .as_ref()

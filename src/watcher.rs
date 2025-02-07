@@ -248,6 +248,13 @@ impl Watchers {
         })
     }
 
+    pub fn get_team_name(&self, watcher_id: Id) -> Option<String> {
+        self.get_watcher_value(watcher_id).and_then(|v| match v {
+            Value::Player(PlayerValue::Team { team_name, .. }) => Some(team_name),
+            _ => None,
+        })
+    }
+
     pub fn announce_with<S, T: Tunnel, F: Fn(Id) -> Option<T>>(&self, sender: S, tunnel_finder: F)
     where
         S: Fn(Id, ValueKind) -> Option<super::UpdateMessage>,
