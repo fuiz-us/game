@@ -50,6 +50,24 @@ pub enum NameStyle {
     Petname(#[garde(range(min = 2, max = 3))] usize),
 }
 
+impl Default for NameStyle {
+    fn default() -> Self {
+        Self::Petname(2)
+    }
+}
+
+impl NameStyle {
+    pub fn get_name(&self) -> Option<String> {
+        match self {
+            Self::Roman(count) => Some(romanname(NameConfig {
+                praenomen: *count > 2,
+            })),
+            Self::Petname(count) => petname::petname(*count as u8, " "),
+        }
+        .map(|x| x.to_title_case())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Validate)]
 pub struct Options {
     /// using random names for players (skips choosing names)
@@ -308,7 +326,13 @@ impl Game {
                 |TeamOptions {
                      size,
                      assign_random,
-                 }| TeamManager::new(size, assign_random),
+                 }| {
+                    TeamManager::new(
+                        size,
+                        assign_random,
+                        options.random_names.unwrap_or_default(),
+                    )
+                },
             ),
             locked: false,
         }
@@ -329,10 +353,7 @@ impl Game {
                         |id, kind| {
                             Some(match kind {
                                 ValueKind::Player => UpdateMessage::FindTeam(
-                                    team_manager
-                                        .get_team(id)
-                                        .and_then(|id| self.names.get_name(&id))
-                                        .unwrap_or_default(),
+                                    self.watchers.get_name(id).unwrap_or_default(),
                                 )
                                 .into(),
                                 _ => UpdateMessage::TeamDisplay(
@@ -506,23 +527,18 @@ impl Game {
         if let Some(team_manager) = &mut self.team_manager {
             if let Some(name) = team_manager.add_player(watcher, &mut self.watchers) {
                 self.update_player_with_name(watcher, &name, &tunnel_finder);
+                return;
             }
         }
 
         if let Some(name_style) = self.options.random_names {
             loop {
-                let name = match name_style {
-                    NameStyle::Roman(count) => romanname(NameConfig {
-                        praenomen: count > 2,
-                    }),
-                    NameStyle::Petname(count) => match petname::petname(count as u8, " ") {
-                        Some(name) => name,
-                        None => continue,
-                    },
+                let Some(name) = name_style.get_name() else {
+                    continue;
                 };
 
                 if self
-                    .assign_player_name(watcher, &name.to_title_case(), &tunnel_finder)
+                    .assign_player_name(watcher, &name, &tunnel_finder)
                     .is_ok()
                 {
                     break;
@@ -796,14 +812,10 @@ impl Game {
                 _ => SyncMessage::WaitingScreen(self.waiting_screen_names(tunnel_finder)).into(),
             },
             State::TeamDisplay => match watcher_kind {
-                ValueKind::Player => SyncMessage::FindTeam(
-                    self.team_manager
-                        .as_ref()
-                        .and_then(|tm| tm.get_team(watcher_id))
-                        .and_then(|id| self.watchers.get_name(id))
-                        .unwrap_or_default(),
-                )
-                .into(),
+                ValueKind::Player => {
+                    SyncMessage::FindTeam(self.watchers.get_name(watcher_id).unwrap_or_default())
+                        .into()
+                }
                 _ => SyncMessage::TeamDisplay(
                     self.team_manager
                         .as_ref()
@@ -896,7 +908,6 @@ impl Game {
                     team_name,
                     individual_name: _,
                     team_id: _,
-                    player_index_in_team: _,
                 } = &player_value
                 {
                     self.watchers.send_message(

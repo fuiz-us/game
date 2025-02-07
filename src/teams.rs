@@ -1,9 +1,10 @@
 use std::collections::{BTreeSet, HashMap};
 
-use heck::ToTitleCase;
 use itertools::Itertools;
 use once_cell_serde::sync::OnceCell;
 use serde::{Deserialize, Serialize};
+
+use crate::game::NameStyle;
 
 use super::{
     names,
@@ -17,6 +18,7 @@ pub struct TeamManager {
     player_to_team: HashMap<Id, Id>,
     pub optimal_size: usize,
     assign_random: bool,
+    name_style: NameStyle,
 
     preferences: Option<HashMap<Id, Vec<Id>>>,
 
@@ -27,11 +29,12 @@ pub struct TeamManager {
 }
 
 impl TeamManager {
-    pub fn new(optimal_size: usize, assign_random: bool) -> Self {
+    pub fn new(optimal_size: usize, assign_random: bool, name_style: NameStyle) -> Self {
         Self {
             player_to_team: HashMap::default(),
             team_to_players: HashMap::default(),
             assign_random,
+            name_style,
             optimal_size,
             preferences: if assign_random {
                 None
@@ -65,7 +68,7 @@ impl TeamManager {
                 .map(|p| p.to_owned())
         };
 
-        self.teams.get_or_init(move || {
+        self.teams.get_or_init(|| {
             let players = watchers
                 .specific_vec(watcher::ValueKind::Player, tunnel_finder)
                 .into_iter()
@@ -140,35 +143,28 @@ impl TeamManager {
                     let team_id = Id::new();
 
                     let team_name = loop {
-                        match names.set_name(
-                            team_id,
-                            &pluralizer::pluralize(
-                                &petname::petname(1, " ")
-                                    .expect("Petname failed")
-                                    .to_title_case(),
-                                2,
-                                false,
-                            ),
-                        ) {
-                            Ok(unique_name) => break unique_name,
-                            Err(_) => continue,
+                        let Some(name) = self.name_style.get_name() else {
+                            continue;
                         };
+
+                        let plural_name = pluralizer::pluralize(&name, 2, false);
+
+                        if let Ok(unique_name) = names.set_name(team_id, &plural_name) {
+                            break unique_name;
+                        }
                     };
 
-                    players.iter().copied().enumerate().for_each(
-                        |(player_index_in_team, player_id)| {
-                            player_to_team.insert(player_id, team_id);
-                            watchers.update_watcher_value(
-                                player_id,
-                                watcher::Value::Player(watcher::PlayerValue::Team {
-                                    team_name: team_name.clone(),
-                                    individual_name: names.get_name(&player_id).unwrap_or_default(),
-                                    team_id,
-                                    player_index_in_team,
-                                }),
-                            );
-                        },
-                    );
+                    players.iter().copied().for_each(|player_id| {
+                        player_to_team.insert(player_id, team_id);
+                        watchers.update_watcher_value(
+                            player_id,
+                            watcher::Value::Player(watcher::PlayerValue::Team {
+                                team_name: team_name.clone(),
+                                individual_name: names.get_name(&player_id).unwrap_or_default(),
+                                team_id,
+                            }),
+                        );
+                    });
 
                     team_to_players.insert(team_id, players.to_vec());
 
@@ -201,6 +197,14 @@ impl TeamManager {
     }
 
     pub fn add_player(&mut self, player_id: Id, watchers: &mut Watchers) -> Option<String> {
+        if let Some(team) = self.get_team(player_id) {
+            return self
+                .teams
+                .get()
+                .and_then(|teams| teams.iter().find(|(id, _)| *id == team))
+                .map(|(_, name)| name.to_owned());
+        }
+
         if let Some(teams) = self.teams.get() {
             let next_index = self.next_team_to_receive_player;
 
@@ -211,20 +215,13 @@ impl TeamManager {
                 .expect("there is always at least one team");
 
             self.player_to_team.insert(player_id, *team_id);
+
             let p = self
                 .team_to_players
                 .get_mut(team_id)
-                .expect("race condition :(");
+                .expect("team should exist");
 
-            let player_index = {
-                match p.iter().position(|p| *p == player_id) {
-                    Some(i) => i,
-                    None => {
-                        p.push(player_id);
-                        p.len() - 1
-                    }
-                }
-            };
+            p.push(player_id);
 
             watchers.update_watcher_value(
                 player_id,
@@ -232,7 +229,6 @@ impl TeamManager {
                     team_name: team_name.to_owned(),
                     individual_name: watchers.get_name(player_id).unwrap_or_default(),
                     team_id: *team_id,
-                    player_index_in_team: player_index,
                 }),
             );
 
@@ -249,11 +245,8 @@ impl TeamManager {
     }
 
     pub fn team_members(&self, player_id: Id) -> Option<Vec<Id>> {
-        self.get_team(player_id).and_then(|team_id| {
-            self.team_to_players
-                .get(&team_id)
-                .map(|v| v.iter().copied().collect_vec())
-        })
+        self.get_team(player_id)
+            .and_then(|team_id| self.team_to_players.get(&team_id).cloned())
     }
 
     pub fn team_index<F: Fn(Id) -> bool>(&self, player_id: Id, f: F) -> Option<usize> {

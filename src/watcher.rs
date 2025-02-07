@@ -66,7 +66,6 @@ pub enum PlayerValue {
         team_name: String,
         individual_name: String,
         team_id: Id,
-        player_index_in_team: usize,
     },
 }
 
@@ -78,7 +77,6 @@ impl PlayerValue {
                 team_name: _,
                 individual_name,
                 team_id: _,
-                player_index_in_team: _,
             } => individual_name,
         }
     }

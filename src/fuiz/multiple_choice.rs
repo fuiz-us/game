@@ -354,8 +354,7 @@ impl State {
                                                     .filter(|id| {
                                                         watchers.is_alive(*id, &tunnel_finder)
                                                     })
-                                                    .collect_vec()
-                                                    .len()
+                                                    .count()
                                             })
                                         }
                                         None => 1,
@@ -364,7 +363,9 @@ impl State {
                                 {
                                     match &team_manager {
                                         Some(team_manager) => team_manager
-                                            .team_index(id, |id| watchers.has_watcher(id))
+                                            .team_index(id, |id| {
+                                                watchers.is_alive(id, &tunnel_finder)
+                                            })
                                             .unwrap_or(0),
                                         None => 0,
                                     }
@@ -467,18 +468,19 @@ impl State {
                         } else {
                             0
                         },
+                        instant,
                     )
                 })
-                .into_grouping_map_by(|(id, _)| {
+                .into_grouping_map_by(|(id, _, _)| {
                     let player_id = *id;
                     match &team_manager {
                         Some(team_manager) => team_manager.get_team(player_id).unwrap_or(player_id),
                         None => player_id,
                     }
                 })
-                .min_by_key(|_, (_, score)| *score)
+                .min_by_key(|_, (_, _, instant)| *instant)
                 .into_iter()
-                .map(|(id, (_, score))| (id, score))
+                .map(|(id, (_, score, _))| (id, score))
                 .chain(
                     {
                         match &team_manager {
@@ -530,7 +532,7 @@ impl State {
                         .iter()
                         .enumerate()
                         .map(|(answer_index, answer_choice)| {
-                            if answer_index % team_size.min(answer_count) == adjusted_team_index {
+                            if answer_index % team_size == adjusted_team_index {
                                 PossiblyHidden::Visible(answer_choice.content.clone())
                             } else {
                                 PossiblyHidden::Hidden
