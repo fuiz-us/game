@@ -524,13 +524,6 @@ impl Game {
         watcher: Id,
         tunnel_finder: F,
     ) {
-        if let Some(team_manager) = &mut self.team_manager {
-            if let Some(name) = team_manager.add_player(watcher, &mut self.watchers) {
-                self.update_player_with_name(watcher, &name, &tunnel_finder);
-                return;
-            }
-        }
-
         if let Some(name_style) = self.options.random_names {
             loop {
                 let Some(name) = name_style.get_name() else {
@@ -571,11 +564,21 @@ impl Game {
 
     /// sends messages to the player about their new assigned name
     pub fn update_player_with_name<T: Tunnel, F: Fn(Id) -> Option<T>>(
-        &self,
+        &mut self,
         watcher: Id,
         name: &str,
         tunnel_finder: F,
     ) {
+        if let Some(team_manager) = &mut self.team_manager {
+            if let Some(name) = team_manager.add_player(watcher, &mut self.watchers) {
+                self.watchers.send_message(
+                    &UpdateMessage::FindTeam(name).into(),
+                    watcher,
+                    &tunnel_finder,
+                );
+            }
+        }
+
         self.watchers.send_message(
             &UpdateMessage::NameAssign(name.to_string()).into(),
             watcher,
