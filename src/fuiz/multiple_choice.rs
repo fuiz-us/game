@@ -338,8 +338,8 @@ impl State {
             self.start_timer();
 
             watchers.announce_with(
-                |id, kind| {
-                    Some(
+                |id, kind| match kind {
+                    ValueKind::Host | ValueKind::Player => Some(
                         UpdateMessage::AnswersAnnouncement {
                             duration: self.config.time_limit,
                             answers: self.get_answers_for_player(
@@ -374,7 +374,8 @@ impl State {
                             ),
                         }
                         .into(),
-                    )
+                    ),
+                    ValueKind::Unassigned => None,
                 },
                 &tunnel_finder,
             );

@@ -273,7 +273,16 @@ impl Watchers {
         message: &super::UpdateMessage,
         tunnel_finder: F,
     ) {
-        self.announce_with(|_, _| Some(message.to_owned()), tunnel_finder);
+        self.announce_with(
+            |_, value_kind| {
+                if matches!(value_kind, ValueKind::Unassigned) {
+                    None
+                } else {
+                    Some(message.to_owned())
+                }
+            },
+            tunnel_finder,
+        );
     }
 
     pub fn announce_specific<T: Tunnel, F: Fn(Id) -> Option<T>>(

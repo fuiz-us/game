@@ -356,10 +356,13 @@ impl Game {
                                     self.watchers.get_team_name(id).unwrap_or_default(),
                                 )
                                 .into(),
-                                _ => UpdateMessage::TeamDisplay(
+                                ValueKind::Host => UpdateMessage::TeamDisplay(
                                     team_manager.team_names().unwrap_or_default(),
                                 )
                                 .into(),
+                                ValueKind::Unassigned => {
+                                    return None;
+                                }
                             })
                         },
                         &tunnel_finder,
@@ -428,7 +431,7 @@ impl Game {
                 self.watchers.announce_with(
                     |watcher_id, watcher_kind| {
                         Some(match watcher_kind {
-                            ValueKind::Host | ValueKind::Unassigned => UpdateMessage::Leaderboard {
+                            ValueKind::Host => UpdateMessage::Leaderboard {
                                 leaderboard: leaderboard_message.clone(),
                             }
                             .into(),
@@ -436,6 +439,7 @@ impl Game {
                                 score: self.score(watcher_id),
                             }
                             .into(),
+                            ValueKind::Unassigned => return None,
                         })
                     },
                     tunnel_finder,
