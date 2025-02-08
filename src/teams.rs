@@ -109,6 +109,10 @@ impl TeamManager {
                 .rev()
                 .collect_vec();
 
+            if existing_teams.is_empty() {
+                existing_teams.push(Vec::new());
+            }
+
             if existing_teams.len() > teams_count {
                 #[derive(PartialEq, Eq, PartialOrd, Ord)]
                 struct PreferenceGroup(usize, Vec<Id>);
